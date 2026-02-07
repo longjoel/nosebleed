@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Start nosebleed X11 slice on :6000 with in-process HTTP UI on 8080.
-NOSEBLEED_X11_HANDSHAKE_ONLY=1 RUST_LOG=info cargo run --quiet -- \
+# Start nosebleed demo: X11 on 127.0.0.1:6000 and HTTP UI on 127.0.0.1:8080.
+NOSEBLEED_DEMO=1 RUST_LOG=info cargo run --quiet -- \
   >/tmp/nosebleed-server.log 2>&1 &
 SERVER_PID=$!
 
