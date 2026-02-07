@@ -33,8 +33,8 @@
     const statusEl = document.getElementById('status');
     const canvas = document.getElementById('screen');
     const ctx = canvas.getContext('2d');
-    let width = 1280;
-    let height = 720;
+    let width = 320;
+    let height = 200;
 
     function resize() {
       const ratio = width / height;
@@ -51,27 +51,21 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // Simple polling fetch of framebuffer PNG for now; replace with websocket diffs later.
-    async function fetchFrame() {
-      try {
-        const res = await fetch('/frame');
-        if (!res.ok) throw new Error('bad status ' + res.status);
-        const blob = await res.blob();
-        const img = new Image();
-        img.onload = () => {
-          width = img.width;
-          height = img.height;
-          resize();
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        };
-        img.src = URL.createObjectURL(blob);
-        statusEl.textContent = 'live';
-      } catch (e) {
-        statusEl.textContent = 'error: ' + e.message;
-      }
-    }
-
-    setInterval(fetchFrame, 1000 / 30);
+    const ws = new WebSocket(`ws://${location.hostname}:8081/ws`);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => statusEl.textContent = 'live';
+    ws.onclose = () => statusEl.textContent = 'closed';
+    ws.onerror = (e) => statusEl.textContent = 'error';
+    ws.onmessage = (event) => {
+      const buf = new Uint8Array(event.data);
+      if (buf.length < 4) return;
+      width = buf[0] | (buf[1] << 8);
+      height = buf[2] | (buf[3] << 8);
+      const pixels = buf.subarray(4);
+      const imgData = new ImageData(new Uint8ClampedArray(pixels), width, height);
+      resize();
+      ctx.putImageData(imgData, 0, 0);
+    };
   </script>
 </body>
 </html>

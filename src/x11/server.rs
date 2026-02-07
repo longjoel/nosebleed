@@ -7,9 +7,10 @@ use anyhow::{Context, Result};
 
 use crate::x11::proto::{build_setup_success, parse_setup_request, ByteOrder};
 use crate::web::serve_http;
+use crate::ws::serve_ws;
 
 #[derive(Debug)]
-struct Framebuffer {
+pub struct Framebuffer {
     width: u16,
     height: u16,
     data: Vec<u8>, // ARGB8888
@@ -69,6 +70,14 @@ impl Framebuffer {
             .context("encode png")?;
         Ok(buf)
     }
+
+    pub fn snapshot_packet(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.data.len());
+        out.extend_from_slice(&self.width.to_le_bytes());
+        out.extend_from_slice(&self.height.to_le_bytes());
+        out.extend_from_slice(&self.data);
+        out
+    }
 }
 /// Demo runner: X11 server on addr, HTTP on http_addr, single client framebuffer displayed as PNG.
 pub fn run_demo(x11_addr: &str, http_addr: &str) -> Result<()> {
@@ -77,13 +86,26 @@ pub fn run_demo(x11_addr: &str, http_addr: &str) -> Result<()> {
     let http_root = std::path::Path::new("static").to_path_buf();
     let (http_host, http_port) = split_host_port(http_addr)?;
     let http_host_owned = http_host.to_string();
-    thread::spawn(move || {
+    thread::spawn({
+        let http_host_owned = http_host_owned.clone();
         let supplier = Arc::new(move || {
             let fb = fb_for_http.lock().ok()?;
             Some(fb.as_png().ok()?)
         });
-        if let Err(e) = serve_http(&http_host_owned, http_port, &http_root, supplier) {
-            eprintln!("http server error: {e:#}");
+        move || {
+            if let Err(e) = serve_http(&http_host_owned, http_port, &http_root, supplier) {
+                eprintln!("http server error: {e:#}");
+            }
+        }
+    });
+
+    // Websocket server on same host, port+1 for now.
+    let ws_fb = Arc::clone(&fb);
+    let ws_host = http_host_owned.clone();
+    let ws_port = http_port + 1;
+    thread::spawn(move || {
+        if let Err(e) = serve_ws(&ws_host, ws_port, ws_fb, 30) {
+            eprintln!("ws server error: {e:#}");
         }
     });
 
