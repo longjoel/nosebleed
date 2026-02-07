@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,13 +34,17 @@ pub fn serve_ws(
 
 fn handle_conn(stream: std::net::TcpStream, fb: Arc<Mutex<Framebuffer>>, target_fps: u32) -> Result<()> {
     let mut ws = tungstenite::accept(stream).context("handshake")?;
+    ws.get_mut().set_nonblocking(true).ok();
     let frame_time = Duration::from_millis((1000 / target_fps.max(1)) as u64);
     loop {
         let start = Instant::now();
-        while let Ok(msg) = ws.read_message() {
-            if msg.is_close() {
-                return Ok(());
-            }
+        match ws.read_message() {
+            Ok(msg) if msg.is_close() => return Ok(()),
+            Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::AlreadyClosed) => return Ok(()),
+            Err(tungstenite::Error::ConnectionClosed) => return Ok(()),
+            Err(_) => {} // ignore other transient errors
+            _ => {}
         }
         let packet = fb
             .lock()
