@@ -8,7 +8,7 @@ pub enum ByteOrder {
 }
 
 impl ByteOrder {
-    fn read_u16(self, bytes: &[u8]) -> Result<u16> {
+    pub fn read_u16(self, bytes: &[u8]) -> Result<u16> {
         if bytes.len() < 2 {
             bail!("not enough bytes for u16");
         }
@@ -16,6 +16,20 @@ impl ByteOrder {
             ByteOrder::LsbFirst => u16::from_le_bytes([bytes[0], bytes[1]]),
             ByteOrder::MsbFirst => u16::from_be_bytes([bytes[0], bytes[1]]),
         })
+    }
+
+    pub fn read_u32(self, bytes: &[u8]) -> Result<u32> {
+        if bytes.len() < 4 {
+            bail!("not enough bytes for u32");
+        }
+        Ok(match self {
+            ByteOrder::LsbFirst => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            ByteOrder::MsbFirst => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        })
+    }
+
+    pub fn read_i16(self, bytes: &[u8]) -> Result<i16> {
+        self.read_u16(bytes).map(|v| v as i16)
     }
 
     fn write_u16(self, val: u16, out: &mut Vec<u8>) {
