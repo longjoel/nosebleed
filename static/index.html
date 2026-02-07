@@ -29,43 +29,17 @@
     </div>
     <canvas id="screen"></canvas>
   </div>
-  <script>
+  <script type="module">
+    import { connectNosebleed } from './nosebleed.js';
+
     const statusEl = document.getElementById('status');
     const canvas = document.getElementById('screen');
-    const ctx = canvas.getContext('2d');
-    let width = 320;
-    let height = 200;
 
-    function resize() {
-      const ratio = width / height;
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      if (w / h > ratio) {
-        canvas.width = h * ratio;
-        canvas.height = h;
-      } else {
-        canvas.width = w;
-        canvas.height = w / ratio;
-      }
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
-    const ws = new WebSocket(`ws://${location.hostname}:8081/ws`);
-    ws.binaryType = 'arraybuffer';
-    ws.onopen = () => statusEl.textContent = 'live';
-    ws.onclose = () => statusEl.textContent = 'closed';
-    ws.onerror = (e) => statusEl.textContent = 'error';
-    ws.onmessage = (event) => {
-      const buf = new Uint8Array(event.data);
-      if (buf.length < 4) return;
-      width = buf[0] | (buf[1] << 8);
-      height = buf[2] | (buf[3] << 8);
-      const pixels = buf.subarray(4);
-      const imgData = new ImageData(new Uint8ClampedArray(pixels), width, height);
-      resize();
-      ctx.putImageData(imgData, 0, 0);
-    };
+    connectNosebleed({
+      canvas,
+      statusEl,
+      url: `ws://${location.hostname}:8081/ws`,
+    });
   </script>
 </body>
 </html>
