@@ -3,8 +3,8 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 
-const WIDTH: u16 = 1280;
-const HEIGHT: u16 = 720;
+const WIDTH: u16 = 320;
+const HEIGHT: u16 = 200;
 const ROOT_DRAWABLE: u32 = 0x2000_0000; // matches build_setup_success()
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut y: i32 = (HEIGHT / 4) as i32;
     let mut vx: i32 = 2;
     let mut vy: i32 = 2;
-    let radius: i32 = 40;
+    let radius: i32 = 20;
 
     loop {
         x += vx;
