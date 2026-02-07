@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nosebleed</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1216;
+      --panel: #1a1f26;
+      --text: #e9eef4;
+      --muted: #8f9aab;
+      --accent: #44d17a;
+    }
+    html, body { height: 100%; margin: 0; background: radial-gradient(circle at 20% 0%, #1e2632 0%, #0f1216 55%); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .wrap { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+    .bar { padding: 10px 14px; background: rgba(0, 0, 0, 0.35); border-bottom: 1px solid #2f3946; display: flex; gap: 12px; align-items: baseline; }
+    .title { font-weight: 700; color: var(--accent); letter-spacing: 0.05em; text-transform: uppercase; font-size: 12px; }
+    .meta { color: var(--muted); font-size: 12px; }
+    #screen { width: 100%; height: 100%; background: #000; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="bar">
+      <div class="title">nosebleed</div>
+      <div class="meta" id="status">connecting…</div>
+    </div>
+    <canvas id="screen"></canvas>
+  </div>
+  <script>
+    const statusEl = document.getElementById('status');
+    const canvas = document.getElementById('screen');
+    const ctx = canvas.getContext('2d');
+    let width = 1280;
+    let height = 720;
+
+    function resize() {
+      const ratio = width / height;
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (w / h > ratio) {
+        canvas.width = h * ratio;
+        canvas.height = h;
+      } else {
+        canvas.width = w;
+        canvas.height = w / ratio;
+      }
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Simple polling fetch of framebuffer PNG for now; replace with websocket diffs later.
+    async function fetchFrame() {
+      try {
+        const res = await fetch('/frame');
+        if (!res.ok) throw new Error('bad status ' + res.status);
+        const blob = await res.blob();
+        const img = new Image();
+        img.onload = () => {
+          width = img.width;
+          height = img.height;
+          resize();
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        };
+        img.src = URL.createObjectURL(blob);
+        statusEl.textContent = 'live';
+      } catch (e) {
+        statusEl.textContent = 'error: ' + e.message;
+      }
+    }
+
+    setInterval(fetchFrame, 1000 / 30);
+  </script>
+</body>
+</html>
