@@ -93,7 +93,7 @@ pub fn run_single_handshake(addr: &str) -> Result<()> {
         stream.read_exact(&mut body)?;
 
         match opcode {
-            72 => handle_put_image(&mut fb, &body, byte_order).context("PutImage")?,
+            72 => handle_put_image(&mut fb, minor, &body, byte_order).context("PutImage")?,
             62 => handle_copy_area(&mut fb, &body, byte_order).context("CopyArea")?,
             1 => { /* CreateWindow - ignore for now */ }
             8 => { /* MapWindow - ignore for now */ }
@@ -106,29 +106,29 @@ pub fn run_single_handshake(addr: &str) -> Result<()> {
     Ok(())
 }
 
-fn handle_put_image(fb: &mut Framebuffer, body: &[u8], order: ByteOrder) -> Result<()> {
+fn handle_put_image(
+    fb: &mut Framebuffer,
+    format_byte: u8,
+    body: &[u8],
+    order: ByteOrder,
+) -> Result<()> {
     if body.len() < 20 {
         return Ok(());
     }
-    let format = body[0];
-    if format != 2 {
+    if format_byte != 2 {
         // Only support ZPixmap.
         return Ok(());
     }
-    let drawable = order.read_u32(&body[4..8])?;
-    let _gc = order.read_u32(&body[8..12])?;
-    let width = order.read_u16(&body[12..14])?;
-    let height = order.read_u16(&body[14..16])?;
-    let dst_x = order.read_i16(&body[16..18])?;
-    let dst_y = order.read_i16(&body[18..20])?;
+    let drawable = order.read_u32(&body[0..4])?;
+    let _gc = order.read_u32(&body[4..8])?;
+    let width = order.read_u16(&body[8..10])?;
+    let height = order.read_u16(&body[10..12])?;
+    let dst_x = order.read_i16(&body[12..14])?;
+    let dst_y = order.read_i16(&body[14..16])?;
+    let _left_pad = body[16];
+    let _depth = body[17];
 
-    // Ignore left-pad and depth in tail.
-    let header_bytes = 24; // 4+20
-    let data = if body.len() >= header_bytes {
-        &body[20..]
-    } else {
-        &body[20..]
-    };
+    let data = if body.len() > 20 { &body[20..] } else { &[] };
 
     if drawable == 0x2000_0000 {
         fb.put_image(dst_x, dst_y, width, height, data);
