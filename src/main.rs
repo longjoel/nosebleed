@@ -70,6 +70,12 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<i32> {
+    if std::env::var("NOSEBLEED_X11_HANDSHAKE_ONLY").is_ok() {
+        // Developer hook: run the minimal handshake server on 6000 for local experiments.
+        nosebleed::run_single_handshake("127.0.0.1:6000")?;
+        return Ok(0);
+    }
+
     let cli = Cli::parse();
 
     if cli.command.is_empty() {

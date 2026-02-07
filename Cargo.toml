@@ -7,3 +7,4 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
+x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code"] }
