@@ -1,9 +1,12 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use anyhow::{Context, Result};
 
 use crate::x11::proto::{build_setup_success, parse_setup_request, ByteOrder};
+use crate::web::serve_http;
 
 #[derive(Debug)]
 struct Framebuffer {
@@ -51,11 +54,58 @@ impl Framebuffer {
             }
         }
     }
+
+    fn as_png(&self) -> Result<Vec<u8>> {
+        use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
+        let mut buf = Vec::new();
+        let encoder = PngEncoder::new(&mut buf);
+        encoder
+            .write_image(
+                &self.data,
+                self.width.into(),
+                self.height.into(),
+                ColorType::Rgba8.into(),
+            )
+            .context("encode png")?;
+        Ok(buf)
+    }
+}
+/// Demo runner: X11 server on addr, HTTP on http_addr, single client framebuffer displayed as PNG.
+pub fn run_demo(x11_addr: &str, http_addr: &str) -> Result<()> {
+    let fb = Arc::new(Mutex::new(Framebuffer::new(1280, 720)));
+    let fb_for_http = Arc::clone(&fb);
+    let http_root = std::path::Path::new("static").to_path_buf();
+    let (http_host, http_port) = split_host_port(http_addr)?;
+    let http_host_owned = http_host.to_string();
+    thread::spawn(move || {
+        let supplier = Arc::new(move || {
+            let fb = fb_for_http.lock().ok()?;
+            Some(fb.as_png().ok()?)
+        });
+        if let Err(e) = serve_http(&http_host_owned, http_port, &http_root, supplier) {
+            eprintln!("http server error: {e:#}");
+        }
+    });
+
+    run_handshake_with_fb(x11_addr, fb)
+}
+
+fn split_host_port(addr: &str) -> Result<(&str, u16)> {
+    let parts: Vec<&str> = addr.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("bad addr {addr}");
+    }
+    Ok((parts[0], parts[1].parse()?))
 }
 
 /// Run a minimal X11 server that accepts a single connection, performs the setup handshake,
 /// then closes. This is the first end-to-end slice to validate parsing/serialization.
 pub fn run_single_handshake(addr: &str) -> Result<()> {
+    let fb = Arc::new(Mutex::new(Framebuffer::new(1280, 720)));
+    run_handshake_with_fb(addr, fb)
+}
+
+fn run_handshake_with_fb(addr: &str, fb: Arc<Mutex<Framebuffer>>) -> Result<()> {
     let listener = TcpListener::bind(addr).with_context(|| format!("bind {addr}"))?;
     let (mut stream, peer) = listener.accept().context("accept client")?;
     println!("x11 client connected from {peer:?}");
@@ -73,7 +123,6 @@ pub fn run_single_handshake(addr: &str) -> Result<()> {
     stream.flush().ok();
 
     // Minimal request loop: consume requests and handle PutImage and CopyArea on root framebuffer.
-    let mut fb = Framebuffer::new(1280, 720);
     loop {
         let mut header = [0u8; 4];
         if let Err(err) = stream.read_exact(&mut header) {
@@ -93,8 +142,16 @@ pub fn run_single_handshake(addr: &str) -> Result<()> {
         stream.read_exact(&mut body)?;
 
         match opcode {
-            72 => handle_put_image(&mut fb, minor, &body, byte_order).context("PutImage")?,
-            62 => handle_copy_area(&mut fb, &body, byte_order).context("CopyArea")?,
+            72 => {
+                if let Ok(mut guard) = fb.lock() {
+                    handle_put_image(&mut guard, minor, &body, byte_order).context("PutImage")?;
+                }
+            }
+            62 => {
+                if let Ok(mut guard) = fb.lock() {
+                    handle_copy_area(&mut guard, &body, byte_order).context("CopyArea")?;
+                }
+            }
             1 => { /* CreateWindow - ignore for now */ }
             8 => { /* MapWindow - ignore for now */ }
             _ => {
