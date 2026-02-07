@@ -63,10 +63,10 @@ fn handle_conn(
     let file_path = root.join(path.trim_start_matches('/'));
     if file_path.exists() {
         let data = std::fs::read(&file_path).context("read file")?;
-        let content_type = if file_path.extension().and_then(|e| e.to_str()) == Some("html") {
-            "text/html; charset=utf-8"
-        } else {
-            "application/octet-stream"
+        let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+            Some("html") => "text/html; charset=utf-8",
+            Some("js") => "text/javascript; charset=utf-8",
+            _ => "application/octet-stream",
         };
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
