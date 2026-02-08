@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         draw_ball(&mut buf, x, y, radius, WIDTH as usize, HEIGHT as usize);
 
-        send_put_image(&mut stream, 0, 0, WIDTH, HEIGHT, &buf)?;
+        send_tiled_put_images(&mut stream, WIDTH, HEIGHT, &buf, 64)?;
         thread::sleep(Duration::from_millis(16));
     }
 }
@@ -105,6 +105,30 @@ fn send_put_image(
     stream.write_all(&req)
 }
 
+fn send_tiled_put_images(
+    stream: &mut TcpStream,
+    full_w: u16,
+    full_h: u16,
+    data: &[u8],
+    tile: u16,
+) -> std::io::Result<()> {
+    let bpp = 4usize;
+    for ty in (0..full_h).step_by(tile as usize) {
+        for tx in (0..full_w).step_by(tile as usize) {
+            let w = tile.min(full_w - tx);
+            let h = tile.min(full_h - ty);
+            let mut chunk = Vec::with_capacity(w as usize * h as usize * bpp);
+            for row in 0..h {
+                let src_row = (ty + row) as usize;
+                let start = (src_row * full_w as usize + tx as usize) * bpp;
+                let end = start + w as usize * bpp;
+                chunk.extend_from_slice(&data[start..end]);
+            }
+            send_put_image(stream, tx as i16, ty as i16, w, h, &chunk)?;
+        }
+    }
+    Ok(())
+}
 fn draw_ball(buf: &mut [u8], cx: i32, cy: i32, r: i32, width: usize, height: usize) {
     let r2 = (r * r) as i32;
     for dy in -r..=r {
