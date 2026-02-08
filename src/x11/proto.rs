@@ -152,10 +152,10 @@ pub fn build_setup_success(byte_order: ByteOrder) -> Vec<u8> {
     // Screen.
     let root_window: u32 = 0x2000_0000;
     let default_visual: u32 = 0x21;
-    let width_px: u16 = 320;
-    let height_px: u16 = 200;
-    let width_mm: u16 = 85; // ~320 / 96dpi * 25.4
-    let height_mm: u16 = 53; // ~200 / 96dpi * 25.4
+    let width_px: u16 = 800;
+    let height_px: u16 = 600;
+    let width_mm: u16 = 212; // ~800 / 96dpi * 25.4
+    let height_mm: u16 = 159; // ~600 / 96dpi * 25.4
 
     byte_order.write_u32(root_window, &mut out); // root
     byte_order.write_u32(0, &mut out); // default colormap

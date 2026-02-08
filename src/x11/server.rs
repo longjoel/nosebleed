@@ -81,7 +81,7 @@ impl Framebuffer {
 }
 /// Demo runner: X11 server on addr, HTTP on http_addr, single client framebuffer displayed as PNG.
 pub fn run_demo(x11_addr: &str, http_addr: &str) -> Result<()> {
-    let fb = Arc::new(Mutex::new(Framebuffer::new(320, 200)));
+    let fb = Arc::new(Mutex::new(Framebuffer::new(800, 600)));
     let fb_for_http = Arc::clone(&fb);
     let http_root = std::path::Path::new("static").to_path_buf();
     let (http_host, http_port) = split_host_port(http_addr)?;
@@ -123,7 +123,7 @@ fn split_host_port(addr: &str) -> Result<(&str, u16)> {
 /// Run a minimal X11 server that accepts a single connection, performs the setup handshake,
 /// then closes. This is the first end-to-end slice to validate parsing/serialization.
 pub fn run_single_handshake(addr: &str) -> Result<()> {
-    let fb = Arc::new(Mutex::new(Framebuffer::new(320, 200)));
+    let fb = Arc::new(Mutex::new(Framebuffer::new(800, 600)));
     run_handshake_with_fb(addr, fb)
 }
 
