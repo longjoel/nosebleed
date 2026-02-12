@@ -1,1 +1,9 @@
 /target
+*.so
+*.nes
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target

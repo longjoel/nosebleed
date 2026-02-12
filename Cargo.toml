@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-ctrlc = "3"
-image = { version = "0.25", default-features = false, features = ["png"] }
-tungstenite = { version = "0.21", default-features = true }
+anyhow = "1.0.98"
+axum = { version = "0.8.4", features = ["ws"] }
+base64 = "0.22.1"
+clap = { version = "4.5.41", features = ["derive", "env"] }
+hmac = "0.12.1"
+libloading = "0.8.8"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10.8"
+tokio = { version = "1.45.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

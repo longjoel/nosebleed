@@ -1,45 +1,761 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>nosebleed</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nosebleed Stream Probe</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #0f1216;
-      --panel: #1a1f26;
-      --text: #e9eef4;
-      --muted: #8f9aab;
-      --accent: #44d17a;
+      --bg: radial-gradient(circle at 15% 20%, #0f1f2a 0%, #070b12 60%, #040507 100%);
+      --card: rgba(10, 15, 23, 0.84);
+      --line: rgba(126, 179, 255, 0.22);
+      --text: #dbe9ff;
+      --accent: #7ee0b8;
+      --warn: #ffb25c;
+      --error: #ff6f86;
+      --font: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
     }
-    html, body { height: 100%; margin: 0; background: radial-gradient(circle at 20% 0%, #1e2632 0%, #0f1216 55%); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    .wrap { display: grid; grid-template-rows: auto 1fr; height: 100%; }
-    .bar { padding: 10px 14px; background: rgba(0, 0, 0, 0.35); border-bottom: 1px solid #2f3946; display: flex; gap: 12px; align-items: baseline; }
-    .title { font-weight: 700; color: var(--accent); letter-spacing: 0.05em; text-transform: uppercase; font-size: 12px; }
-    .meta { color: var(--muted); font-size: 12px; }
-    #screen { width: 100%; height: 100%; background: #000; }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+    }
+
+    .panel {
+      width: min(1040px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+      animation: rise 280ms ease;
+    }
+
+    .header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(1rem, 2.5vw, 1.3rem);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .status {
+      font-size: 0.9rem;
+      opacity: 0.95;
+    }
+
+    .status.ok { color: var(--accent); }
+    .status.warn { color: var(--warn); }
+    .status.error { color: var(--error); }
+
+    .content {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 1rem;
+      padding: 1rem;
+    }
+
+    .video-wrap {
+      background: rgba(2, 5, 9, 0.95);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      min-height: 300px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+      display: block;
+      max-height: 70vh;
+    }
+
+    .overlay {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      font-size: 0.76rem;
+      background: rgba(0, 0, 0, 0.52);
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .side {
+      display: grid;
+      gap: 0.7rem;
+      align-content: start;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.7rem;
+      background: rgba(9, 14, 22, 0.88);
+    }
+
+    .label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.8;
+      margin: 0 0 0.4rem;
+    }
+
+    .value {
+      margin: 0;
+      font-family: "JetBrains Mono", "IBM Plex Mono", monospace;
+      font-size: 0.9rem;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+
+    .keys {
+      margin: 0;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      opacity: 0.9;
+    }
+
+    .audio-btn {
+      width: 100%;
+      border: 1px solid rgba(126, 224, 184, 0.45);
+      border-radius: 8px;
+      background: rgba(126, 224, 184, 0.14);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.88rem;
+      padding: 0.5rem;
+      cursor: pointer;
+      margin-bottom: 0.45rem;
+      transition: background 120ms ease;
+    }
+
+    .audio-btn:hover {
+      background: rgba(126, 224, 184, 0.26);
+    }
+
+    .audio-btn:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    @keyframes rise {
+      from {
+        transform: translateY(8px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="bar">
-      <div class="title">nosebleed</div>
-      <div class="meta" id="status">connecting…</div>
-    </div>
-    <canvas width="640" height="480" id="screen"></canvas>
-  </div>
-  <script type="module">
-    import { connectNosebleed } from './nosebleed.js';
+  <main class="panel">
+    <header class="header">
+      <h1 class="title">Nosebleed WebSocket Probe</h1>
+      <div id="status" class="status warn">connecting</div>
+    </header>
 
-    const statusEl = document.getElementById('status');
-    const canvas = document.getElementById('screen');
+    <section class="content">
+      <div class="video-wrap">
+        <canvas id="screen" width="320" height="240"></canvas>
+        <div class="overlay" id="frameMeta">waiting for frame</div>
+      </div>
 
-    connectNosebleed({
-      canvas,
-      statusEl,
-      url: `ws://${location.hostname}:8081/ws`,
-    });
+      <aside class="side">
+        <div class="card">
+          <p class="label">Transport</p>
+          <p class="value" id="transport">video: -<br />audio: -<br />input: -</p>
+        </div>
+
+        <div class="card">
+          <p class="label">Latency</p>
+          <p class="value" id="latency">ack: - ms</p>
+        </div>
+
+        <div class="card">
+          <p class="label">Audio</p>
+          <button id="enableAudio" class="audio-btn">Enable Audio</button>
+          <p class="value" id="audioState">state: idle</p>
+        </div>
+
+        <div class="card">
+          <p class="label">Controls</p>
+          <p class="keys">
+            Arrows = D-Pad<br />
+            Z/X = B/A<br />
+            A/S = Y/X<br />
+            Q/W = L/R<br />
+            Shift/Enter = Select/Start<br />
+            IJKL = Left Analog
+          </p>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const transportEl = document.getElementById("transport");
+    const latencyEl = document.getElementById("latency");
+    const frameMetaEl = document.getElementById("frameMeta");
+    const audioStateEl = document.getElementById("audioState");
+    const audioButton = document.getElementById("enableAudio");
+    const canvas = document.getElementById("screen");
+    const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
+
+    const wsScheme = location.protocol === "https:" ? "wss" : "ws";
+    const authToken = new URLSearchParams(location.search).get("token");
+    const withToken = (path) =>
+      authToken
+        ? `${wsScheme}://${location.host}${path}?token=${encodeURIComponent(authToken)}`
+        : `${wsScheme}://${location.host}${path}`;
+    const videoUrl = withToken("/ws/video");
+    const audioUrl = withToken("/ws/audio");
+    const inputUrl = withToken("/ws/input");
+
+    let videoWs;
+    let audioWs;
+    let inputWs;
+    let audioCtx;
+    let audioGainNode;
+    let audioStartTime = 0;
+    let audioEnabled = false;
+    let lastAckStart = 0;
+    let lastSequence = 0;
+
+    const buttons = {
+      b: false,
+      y: false,
+      select: false,
+      start: false,
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      a: false,
+      x: false,
+      l: false,
+      r: false,
+      l2: false,
+      r2: false,
+      l3: false,
+      r3: false,
+    };
+
+    const axes = {
+      lx: 0,
+      ly: 0,
+      rx: 0,
+      ry: 0,
+      l2: 0,
+      r2: 0,
+    };
+
+    const keyMap = {
+      ArrowUp: ["button", "up"],
+      ArrowDown: ["button", "down"],
+      ArrowLeft: ["button", "left"],
+      ArrowRight: ["button", "right"],
+      z: ["button", "b"],
+      x: ["button", "a"],
+      a: ["button", "y"],
+      s: ["button", "x"],
+      q: ["button", "l"],
+      w: ["button", "r"],
+      Shift: ["button", "select"],
+      Enter: ["button", "start"],
+    };
+
+    const analogKeys = {
+      i: ["ly", -1],
+      k: ["ly", 1],
+      j: ["lx", -1],
+      l: ["lx", 1],
+    };
+
+    const heldAnalogKeys = new Set();
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = `status ${kind}`;
+    }
+
+    function transportState(ws, idleState = "closed") {
+      if (!ws) {
+        return idleState;
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        return "open";
+      }
+      if (ws.readyState === WebSocket.CONNECTING) {
+        return "connecting";
+      }
+      return "closed";
+    }
+
+    function updateTransport() {
+      const audioState = audioEnabled ? transportState(audioWs) : "idle";
+      transportEl.innerHTML = `video: ${transportState(videoWs)}<br />audio: ${audioState}<br />input: ${transportState(inputWs)}`;
+    }
+
+    function sendInput() {
+      if (!inputWs || inputWs.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const sequence = ++lastSequence;
+      lastAckStart = performance.now();
+      inputWs.send(JSON.stringify({
+        type: "input",
+        port: 0,
+        sequence,
+        buttons,
+        axes,
+      }));
+    }
+
+    function recomputeAnalogFromKeys() {
+      axes.lx = 0;
+      axes.ly = 0;
+      for (const key of heldAnalogKeys) {
+        const [axis, value] = analogKeys[key];
+        axes[axis] = Math.max(-1, Math.min(1, axes[axis] + value));
+      }
+    }
+
+    function setupKeyboard() {
+      window.addEventListener("keydown", (event) => {
+        const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+
+        if (keyMap[key]) {
+          const [, buttonName] = keyMap[key];
+          if (!buttons[buttonName]) {
+            buttons[buttonName] = true;
+            sendInput();
+          }
+          event.preventDefault();
+          return;
+        }
+
+        if (analogKeys[key]) {
+          const size = heldAnalogKeys.size;
+          heldAnalogKeys.add(key);
+          if (heldAnalogKeys.size !== size) {
+            recomputeAnalogFromKeys();
+            sendInput();
+          }
+          event.preventDefault();
+        }
+      });
+
+      window.addEventListener("keyup", (event) => {
+        const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+
+        if (keyMap[key]) {
+          const [, buttonName] = keyMap[key];
+          if (buttons[buttonName]) {
+            buttons[buttonName] = false;
+            sendInput();
+          }
+          event.preventDefault();
+          return;
+        }
+
+        if (analogKeys[key]) {
+          const had = heldAnalogKeys.delete(key);
+          if (had) {
+            recomputeAnalogFromKeys();
+            sendInput();
+          }
+          event.preventDefault();
+        }
+      });
+    }
+
+    function connectVideo() {
+      videoWs = new WebSocket(videoUrl);
+      videoWs.binaryType = "arraybuffer";
+
+      videoWs.onopen = () => {
+        updateTransport();
+        setStatus("video connected", inputWs?.readyState === 1 ? "ok" : "warn");
+      };
+
+      videoWs.onmessage = (event) => {
+        if (!(event.data instanceof ArrayBuffer)) {
+          return;
+        }
+
+        const packet = decodeFramePacket(event.data);
+        if (!packet) {
+          return;
+        }
+
+        renderFrame(packet);
+      };
+
+      videoWs.onclose = () => {
+        updateTransport();
+        setStatus("video disconnected", "error");
+        setTimeout(connectVideo, 700);
+      };
+
+      videoWs.onerror = () => {
+        setStatus("video transport error", "error");
+      };
+    }
+
+    function connectInput() {
+      inputWs = new WebSocket(inputUrl);
+
+      inputWs.onopen = () => {
+        updateTransport();
+        setStatus(videoWs?.readyState === 1 ? "connected" : "input connected", videoWs?.readyState === 1 ? "ok" : "warn");
+        sendInput();
+      };
+
+      inputWs.onmessage = (event) => {
+        if (typeof event.data !== "string") {
+          return;
+        }
+
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === "ack" && typeof payload.server_time_ms === "number") {
+            const latency = performance.now() - lastAckStart;
+            latencyEl.textContent = `ack: ${latency.toFixed(1)} ms`;
+          }
+        } catch {
+          // Ignore parse failures
+        }
+      };
+
+      inputWs.onclose = () => {
+        updateTransport();
+        setStatus("input disconnected", "error");
+        setTimeout(connectInput, 700);
+      };
+
+      inputWs.onerror = () => {
+        setStatus("input transport error", "error");
+      };
+    }
+
+    async function enableAudio() {
+      try {
+        if (!audioCtx) {
+          audioCtx = new AudioContext({ latencyHint: "interactive" });
+          audioGainNode = audioCtx.createGain();
+          audioGainNode.gain.value = 0.9;
+          audioGainNode.connect(audioCtx.destination);
+        }
+
+        if (audioCtx.state !== "running") {
+          await audioCtx.resume();
+        }
+
+        audioEnabled = true;
+        audioButton.disabled = true;
+        audioButton.textContent = "Audio Enabled";
+        audioStateEl.textContent = "state: starting";
+        connectAudio();
+        updateTransport();
+      } catch {
+        audioStateEl.textContent = "state: failed to start";
+      }
+    }
+
+    function connectAudio() {
+      if (!audioEnabled) {
+        return;
+      }
+
+      if (audioWs && (audioWs.readyState === WebSocket.OPEN || audioWs.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      audioWs = new WebSocket(audioUrl);
+      audioWs.binaryType = "arraybuffer";
+
+      audioWs.onopen = () => {
+        updateTransport();
+        audioStateEl.textContent = "state: connected";
+      };
+
+      audioWs.onmessage = (event) => {
+        if (!(event.data instanceof ArrayBuffer)) {
+          return;
+        }
+
+        const packet = decodeAudioPacket(event.data);
+        if (!packet) {
+          return;
+        }
+
+        enqueueAudioPacket(packet);
+      };
+
+      audioWs.onclose = () => {
+        updateTransport();
+        if (audioEnabled) {
+          audioStateEl.textContent = "state: reconnecting";
+          setTimeout(connectAudio, 700);
+        }
+      };
+
+      audioWs.onerror = () => {
+        audioStateEl.textContent = "state: transport error";
+      };
+    }
+
+    function decodeFramePacket(buffer) {
+      const view = new DataView(buffer);
+      if (view.byteLength < 37) {
+        return null;
+      }
+
+      if (
+        view.getUint8(0) !== 0x4e ||
+        view.getUint8(1) !== 0x42 ||
+        view.getUint8(2) !== 0x46 ||
+        view.getUint8(3) !== 0x30
+      ) {
+        return null;
+      }
+
+      const sequence = Number(view.getBigUint64(4, true));
+      const timestampUs = Number(view.getBigUint64(12, true));
+      const width = view.getUint32(20, true);
+      const height = view.getUint32(24, true);
+      const pitch = view.getUint32(28, true);
+      const pixelFormat = view.getUint8(32);
+      const payloadLen = view.getUint32(33, true);
+
+      if (37 + payloadLen > view.byteLength) {
+        return null;
+      }
+
+      return {
+        sequence,
+        timestampUs,
+        width,
+        height,
+        pitch,
+        pixelFormat,
+        bytes: new Uint8Array(buffer, 37, payloadLen),
+      };
+    }
+
+    function decodeAudioPacket(buffer) {
+      const view = new DataView(buffer);
+      if (view.byteLength < 34) {
+        return null;
+      }
+
+      if (
+        view.getUint8(0) !== 0x4e ||
+        view.getUint8(1) !== 0x42 ||
+        view.getUint8(2) !== 0x41 ||
+        view.getUint8(3) !== 0x30
+      ) {
+        return null;
+      }
+
+      const sequence = Number(view.getBigUint64(4, true));
+      const sampleRateHz = view.getUint32(20, true);
+      const channels = view.getUint8(24);
+      const sampleFormat = view.getUint8(25);
+      const frameCount = view.getUint32(26, true);
+      const payloadLen = view.getUint32(30, true);
+
+      if (sampleFormat !== 0 || channels < 1 || channels > 2 || sampleRateHz < 8000) {
+        return null;
+      }
+
+      if (34 + payloadLen > view.byteLength) {
+        return null;
+      }
+
+      return {
+        sequence,
+        sampleRateHz,
+        channels,
+        frameCount,
+        payloadLen,
+        buffer,
+        pcmOffset: 34,
+      };
+    }
+
+    function enqueueAudioPacket(packet) {
+      if (!audioCtx || audioCtx.state !== "running") {
+        return;
+      }
+
+      const sampleCount = packet.frameCount * packet.channels;
+      if (sampleCount * 2 > packet.payloadLen || sampleCount === 0) {
+        return;
+      }
+
+      const pcm = new Int16Array(packet.buffer, packet.pcmOffset, sampleCount);
+      const audioBuffer = audioCtx.createBuffer(packet.channels, packet.frameCount, packet.sampleRateHz);
+
+      for (let channel = 0; channel < packet.channels; channel++) {
+        const out = audioBuffer.getChannelData(channel);
+        for (let i = 0; i < packet.frameCount; i++) {
+          const sample = pcm[i * packet.channels + channel] / 32768.0;
+          out[i] = sample;
+        }
+      }
+
+      const now = audioCtx.currentTime;
+      if (audioStartTime < now + 0.04) {
+        audioStartTime = now + 0.04;
+      }
+
+      // Keep queue bounded by dropping excess scheduling backlog.
+      if (audioStartTime - now > 0.30) {
+        audioStartTime = now + 0.08;
+      }
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioGainNode);
+      source.start(audioStartTime);
+      source.onended = () => source.disconnect();
+      audioStartTime += audioBuffer.duration;
+
+      const queueMs = Math.max(0, (audioStartTime - now) * 1000.0);
+      audioStateEl.textContent = `state: playing | queue ${queueMs.toFixed(0)} ms | ${packet.sampleRateHz} Hz`;
+    }
+
+    function renderFrame(frame) {
+      if (canvas.width !== frame.width || canvas.height !== frame.height) {
+        canvas.width = frame.width;
+        canvas.height = frame.height;
+      }
+
+      const rgba = new Uint8ClampedArray(frame.width * frame.height * 4);
+
+      if (frame.pixelFormat === 0) {
+        xrgb8888ToRgba(frame, rgba);
+      } else if (frame.pixelFormat === 1) {
+        rgb565ToRgba(frame, rgba);
+      } else if (frame.pixelFormat === 2) {
+        xrgb1555ToRgba(frame, rgba);
+      } else {
+        return;
+      }
+
+      const imageData = new ImageData(rgba, frame.width, frame.height);
+      ctx.putImageData(imageData, 0, 0);
+
+      const ageMs = (Date.now() - Math.floor(frame.timestampUs / 1000)).toFixed(1);
+      frameMetaEl.textContent = `seq ${frame.sequence} | ${frame.width}x${frame.height} | age ${ageMs}ms`;
+    }
+
+    function xrgb8888ToRgba(frame, out) {
+      const src = frame.bytes;
+      let dstOffset = 0;
+      for (let y = 0; y < frame.height; y++) {
+        const row = y * frame.pitch;
+        for (let x = 0; x < frame.width; x++) {
+          const i = row + x * 4;
+          out[dstOffset++] = src[i + 2];
+          out[dstOffset++] = src[i + 1];
+          out[dstOffset++] = src[i + 0];
+          out[dstOffset++] = 255;
+        }
+      }
+    }
+
+    function rgb565ToRgba(frame, out) {
+      const src = frame.bytes;
+      let dstOffset = 0;
+      for (let y = 0; y < frame.height; y++) {
+        const row = y * frame.pitch;
+        for (let x = 0; x < frame.width; x++) {
+          const i = row + x * 2;
+          const value = src[i] | (src[i + 1] << 8);
+          const r = (value >> 11) & 0x1f;
+          const g = (value >> 5) & 0x3f;
+          const b = value & 0x1f;
+          out[dstOffset++] = (r * 255) / 31;
+          out[dstOffset++] = (g * 255) / 63;
+          out[dstOffset++] = (b * 255) / 31;
+          out[dstOffset++] = 255;
+        }
+      }
+    }
+
+    function xrgb1555ToRgba(frame, out) {
+      const src = frame.bytes;
+      let dstOffset = 0;
+      for (let y = 0; y < frame.height; y++) {
+        const row = y * frame.pitch;
+        for (let x = 0; x < frame.width; x++) {
+          const i = row + x * 2;
+          const value = src[i] | (src[i + 1] << 8);
+          const r = (value >> 10) & 0x1f;
+          const g = (value >> 5) & 0x1f;
+          const b = value & 0x1f;
+          out[dstOffset++] = (r * 255) / 31;
+          out[dstOffset++] = (g * 255) / 31;
+          out[dstOffset++] = (b * 255) / 31;
+          out[dstOffset++] = 255;
+        }
+      }
+    }
+
+    audioButton.addEventListener("click", enableAudio);
+
+    setupKeyboard();
+    connectVideo();
+    connectInput();
+    updateTransport();
+
+    setInterval(() => {
+      if (inputWs?.readyState === WebSocket.OPEN) {
+        inputWs.send(JSON.stringify({ type: "ping", client_time_ms: Date.now() }));
+      }
+    }, 1000);
+
+    setInterval(() => {
+      sendInput();
+    }, 50);
   </script>
 </body>
 </html>
