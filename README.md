@@ -12,7 +12,8 @@ Consumer integration guide: `docs/public-service.md`.
 - Streams stereo PCM audio over WebSocket (`/ws/audio`) in low-latency chunks.
 - Accepts gamepad input from one or more clients over WebSocket (`/ws/input`) as JSON.
 - Merges multiple virtual controllers per emulated port with stale-input pruning.
-- Includes a browser probe UI at `/` for quick testing.
+- Includes a browser probe UI at `/` with keyboard + Gamepad API input.
+- Supports optional WebRTC DataChannel transport via `/webrtc/session` (signaling over HTTP).
 
 When `--core` is omitted, a mock core generates synthetic video so transport/input can be tested in isolation.
 
@@ -33,6 +34,20 @@ Useful optional args:
 - `--fps 60`
 - `--width 320` (mock mode only)
 - `--height 240` (mock mode only)
+
+## Browser gamepad quick start
+
+1. Pair the controller in your OS (USB or Bluetooth).
+2. Open `http://localhost:8080/` (or HTTPS in deployed environments).
+3. Keep the tab focused and press any controller button once.
+4. Select the desired input `Port` in the UI.
+5. Check Input lights:
+   - `PAD` means a controller is detected.
+   - `MOVE` blinks when controller state changes.
+   - `TX` blinks when input packets are sent.
+   - `ACK` blinks when server acknowledgements arrive.
+6. If buttons/axes are wrong on Linux or non-standard pads, open `Gamepad Debug` and run `Start Bind Wizard` once per device profile.
+7. To test WebRTC transport in the probe, open `http://localhost:8080/?transport=webrtc`.
 
 ## WebSocket API
 
@@ -118,25 +133,70 @@ Packet layout (`NBA0`):
 8. `payload_len` (`u32`, little endian)
 9. `payload` (`[u8; payload_len]`) interleaved PCM frames
 
+### WebRTC signaling: `POST /webrtc/session`
+
+- Transport: HTTP JSON request/response (offer/answer exchange)
+- Auth: same token query parameter model as WebSocket routes (`?token=...`)
+- DataChannels expected by this service:
+  - `video` (binary chunks of `NBV1` VP8 packets when `video_mode=vp8`, otherwise `NBF0`)
+  - `audio` (binary chunks of `NBA0` packets)
+  - `input` (JSON control + ack/error, same schema as `/ws/input`)
+
+Request body:
+
+```json
+{
+  "type": "offer",
+  "sdp": "v=0...",
+  "video_mode": "vp8"
+}
+```
+
+`video_mode` is optional:
+
+- `vp8`: server attempts VP8 encode (`NBV1` packets over `video` DataChannel), falls back to `NBF0` raw packets if encoder startup fails.
+- `raw`: always send `NBF0` packets.
+
+`NBV1` payload layout:
+
+1. `magic` (`[u8; 4]`) = `NBV1`
+2. `pts_us` (`u64`, little endian)
+3. `duration_us` (`u32`, little endian)
+4. `flags` (`u8`) bit0 = keyframe
+5. `payload_len` (`u32`, little endian)
+6. `payload` (VP8 frame bytes)
+
+Encoder configuration (environment variables):
+
+- `NOSEBLEED_FFMPEG_BIN` (default `ffmpeg`)
+- `NOSEBLEED_WEBRTC_VIDEO_ENCODER` (default `libvpx`; set to a VP8-capable hardware ffmpeg encoder for your host)
+- `NOSEBLEED_WEBRTC_VIDEO_ENCODER_ARGS` (optional extra ffmpeg args, split on spaces; useful for hardware encoder setup like device/filter flags)
+- `NOSEBLEED_WEBRTC_VIDEO_BITRATE_KBPS` (default `2500`)
+
+Response body:
+
+```json
+{
+  "type": "answer",
+  "sdp": "v=0..."
+}
+```
+
 ## Notes for low latency
 
 - The pipeline intentionally favors dropping old frames over queueing.
 - Keep `permessage-deflate` off for video channels.
-- For WAN use, packetize compressed video (H.264/AV1) instead of raw frames.
-- If you want browser-native hardware decode with lower bandwidth, evolve this to WebRTC and keep WebSocket for control.
+- WebRTC DataChannel video can run in VP8 mode (`NBV1`) to cut bandwidth versus raw frames.
+- For WAN scale, evolve media to codec RTP tracks (H.264/AV1 + Opus).
 
 ## Current limits
 
-- Video is raw frame payload over WebSocket (high bandwidth).
+- WebSocket video is raw frame payload (`NBF0`) and therefore high-bandwidth.
+- WebRTC video supports VP8 packet mode (`NBV1`) but does not yet use RTP media tracks.
 - Environment callback support is minimal (pixel format negotiation only).
 - Audio is uncompressed PCM over WebSocket (works, but bandwidth-heavy).
 
 ## WebRTC path
 
-Yes, WebRTC is a good next step. The current split (`/ws/input` control + media packetization) maps cleanly to:
-
-- WebRTC media tracks for audio/video (browser jitter buffer + hardware decode paths)
-- DataChannel or existing WebSocket for input/control
-- Optional SFU integration for multi-viewer scaling
-
-These are straightforward extension points in `src/libretro.rs` and `src/server.rs`.
+Current implementation is DataChannel-first so existing packet formats and decoders continue to work.
+Next phase is codec-based media tracks + SFU compatibility.

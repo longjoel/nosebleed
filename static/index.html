@@ -163,6 +163,119 @@
       cursor: default;
     }
 
+    .field-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .field-input {
+      width: 72px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(6, 10, 16, 0.92);
+      color: var(--text);
+      font-family: "JetBrains Mono", "IBM Plex Mono", monospace;
+      font-size: 0.85rem;
+      padding: 0.25rem 0.4rem;
+    }
+
+    .field-input:focus {
+      outline: 1px solid rgba(126, 224, 184, 0.55);
+      outline-offset: 1px;
+    }
+
+    .lights {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.35rem;
+      margin-bottom: 0.45rem;
+    }
+
+    .light {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.66rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.9;
+    }
+
+    .light-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #39414f;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+      transition: background 80ms linear, box-shadow 80ms linear, transform 80ms linear;
+    }
+
+    .light-dot.is-on {
+      background: #7ee0b8;
+      box-shadow: 0 0 10px rgba(126, 224, 184, 0.65);
+      transform: scale(1.1);
+    }
+
+    .light-dot.is-warn {
+      background: #ff6f86;
+      box-shadow: 0 0 10px rgba(255, 111, 134, 0.65);
+      transform: scale(1.1);
+    }
+
+    .small-btn-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.35rem;
+      margin: 0.4rem 0;
+    }
+
+    .small-btn {
+      border: 1px solid rgba(126, 224, 184, 0.4);
+      border-radius: 7px;
+      background: rgba(126, 224, 184, 0.14);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.77rem;
+      padding: 0.35rem 0.45rem;
+      cursor: pointer;
+      transition: background 120ms ease, opacity 120ms ease;
+    }
+
+    .small-btn:hover {
+      background: rgba(126, 224, 184, 0.26);
+    }
+
+    .small-btn.warn {
+      border-color: rgba(255, 111, 134, 0.45);
+      background: rgba(255, 111, 134, 0.15);
+    }
+
+    .small-btn.warn:hover {
+      background: rgba(255, 111, 134, 0.24);
+    }
+
+    .small-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .debug-pre {
+      margin: 0;
+      padding: 0.45rem 0.55rem;
+      border-radius: 7px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(2, 5, 9, 0.82);
+      font-family: "JetBrains Mono", "IBM Plex Mono", monospace;
+      font-size: 0.74rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     @keyframes rise {
       from {
         transform: translateY(8px);
@@ -212,6 +325,22 @@
         </div>
 
         <div class="card">
+          <p class="label">Input</p>
+          <div class="field-row">
+            <label class="value" for="inputPort">Port</label>
+            <input id="inputPort" class="field-input" type="number" min="0" max="7" value="0" />
+          </div>
+          <div class="lights">
+            <div class="light"><span class="light-dot is-warn" id="lightPad"></span><span>PAD</span></div>
+            <div class="light"><span class="light-dot" id="lightMove"></span><span>MOVE</span></div>
+            <div class="light"><span class="light-dot" id="lightTx"></span><span>TX</span></div>
+            <div class="light"><span class="light-dot" id="lightAck"></span><span>ACK</span></div>
+          </div>
+          <p class="value" id="gamepadState">gamepad: none (keyboard active)</p>
+          <p class="value" id="mappingState">mapping: standard (default)</p>
+        </div>
+
+        <div class="card">
           <p class="label">Controls</p>
           <p class="keys">
             Arrows = D-Pad<br />
@@ -219,8 +348,32 @@
             A/S = Y/X<br />
             Q/W = L/R<br />
             Shift/Enter = Select/Start<br />
-            IJKL = Left Analog
+            IJKL = Left Analog<br />
+            Standard Gamepad API mapping supported
           </p>
+        </div>
+
+        <div class="card">
+          <p class="label">Gamepad Setup</p>
+          <p class="keys">
+            1) Plug USB or pair Bluetooth in your OS.<br />
+            2) Open this page over HTTPS/localhost and keep it focused.<br />
+            3) Press any gamepad button once to activate it.<br />
+            4) Pick your player port, then verify PAD/MOVE/TX/ACK lights.<br />
+            5) Add `?transport=webrtc` to test WebRTC DataChannels.
+          </p>
+        </div>
+
+        <div class="card">
+          <p class="label">Gamepad Debug</p>
+          <p class="value" id="bindState">wizard: idle</p>
+          <div class="small-btn-row">
+            <button id="startBind" class="small-btn">Start Bind Wizard</button>
+            <button id="skipBind" class="small-btn" disabled>Skip Step</button>
+            <button id="cancelBind" class="small-btn" disabled>Cancel Wizard</button>
+            <button id="clearBind" class="small-btn warn">Clear Saved Map</button>
+          </div>
+          <pre id="gamepadRaw" class="debug-pre">raw: waiting for controller</pre>
         </div>
       </aside>
     </section>
@@ -233,29 +386,105 @@
     const frameMetaEl = document.getElementById("frameMeta");
     const audioStateEl = document.getElementById("audioState");
     const audioButton = document.getElementById("enableAudio");
+    const inputPortEl = document.getElementById("inputPort");
+    const gamepadStateEl = document.getElementById("gamepadState");
+    const mappingStateEl = document.getElementById("mappingState");
+    const bindStateEl = document.getElementById("bindState");
+    const startBindEl = document.getElementById("startBind");
+    const skipBindEl = document.getElementById("skipBind");
+    const cancelBindEl = document.getElementById("cancelBind");
+    const clearBindEl = document.getElementById("clearBind");
+    const gamepadRawEl = document.getElementById("gamepadRaw");
+    const lightPadEl = document.getElementById("lightPad");
+    const lightMoveEl = document.getElementById("lightMove");
+    const lightTxEl = document.getElementById("lightTx");
+    const lightAckEl = document.getElementById("lightAck");
     const canvas = document.getElementById("screen");
     const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
 
     const wsScheme = location.protocol === "https:" ? "wss" : "ws";
-    const authToken = new URLSearchParams(location.search).get("token");
+    const httpScheme = location.protocol === "https:" ? "https" : "http";
+    const searchParams = new URLSearchParams(location.search);
+    const authToken = searchParams.get("token");
+    const preferWebRtcTransport = searchParams.get("transport") === "webrtc";
     const withToken = (path) =>
       authToken
         ? `${wsScheme}://${location.host}${path}?token=${encodeURIComponent(authToken)}`
         : `${wsScheme}://${location.host}${path}`;
+    const withHttpToken = (path) =>
+      authToken
+        ? `${httpScheme}://${location.host}${path}?token=${encodeURIComponent(authToken)}`
+        : `${httpScheme}://${location.host}${path}`;
     const videoUrl = withToken("/ws/video");
     const audioUrl = withToken("/ws/audio");
     const inputUrl = withToken("/ws/input");
+    const webrtcSessionUrl = withHttpToken("/webrtc/session");
 
     let videoWs;
     let audioWs;
     let inputWs;
+    let rtcPeer;
+    let rtcVideoDc;
+    let rtcAudioDc;
+    let rtcInputDc;
+    let rtcVideoDecoder = null;
+    let rtcVideoDecoderReady = false;
+    let rtcLastVideoPtsUs = 0;
     let audioCtx;
     let audioGainNode;
     let audioStartTime = 0;
     let audioEnabled = false;
     let lastAckStart = 0;
     let lastSequence = 0;
+    let activeGamepadIndex = null;
+    let gamepadLoopHandle = 0;
 
+    const STICK_DEADZONE = 0.15;
+    const TRIGGER_THRESHOLD = 0.35;
+    const KEEPALIVE_INTERVAL_MS = 100;
+    const BLINK_WINDOW_MS = 95;
+    const RTC_CHUNK_MAGIC = 0x3143424e;
+    const RTC_CHUNK_HEADER_LEN = 12;
+    const RTC_CHUNK_TTL_MS = 1400;
+    const VP8_VIDEO_MAGIC = 0x3156424e;
+    const VP8_VIDEO_HEADER_LEN = 21;
+    const MAPPING_STORAGE_KEY = "nosebleed.gamepad.customMappings.v1";
+    const DIGITAL_FIELDS = ["b", "y", "select", "start", "up", "down", "left", "right", "a", "x", "l", "r", "l2", "r2", "l3", "r3"];
+    const AXIS_FIELDS = ["lx", "ly", "rx", "ry", "l2", "r2"];
+    const BIND_STEPS = [
+      { kind: "button", target: "a", prompt: "Press A / East" },
+      { kind: "button", target: "b", prompt: "Press B / South" },
+      { kind: "button", target: "x", prompt: "Press X / North" },
+      { kind: "button", target: "y", prompt: "Press Y / West" },
+      { kind: "button", target: "l", prompt: "Press L / LB" },
+      { kind: "button", target: "r", prompt: "Press R / RB" },
+      { kind: "trigger", target: "l2", prompt: "Pull L2 / LT fully" },
+      { kind: "trigger", target: "r2", prompt: "Pull R2 / RT fully" },
+      { kind: "button", target: "select", prompt: "Press Select / Back" },
+      { kind: "button", target: "start", prompt: "Press Start" },
+      { kind: "button", target: "l3", prompt: "Press Left Stick (L3)" },
+      { kind: "button", target: "r3", prompt: "Press Right Stick (R3)" },
+      { kind: "dpad", target: "up", prompt: "Press D-Pad Up" },
+      { kind: "dpad", target: "down", prompt: "Press D-Pad Down" },
+      { kind: "dpad", target: "left", prompt: "Press D-Pad Left" },
+      { kind: "dpad", target: "right", prompt: "Press D-Pad Right" },
+      { kind: "axis", target: "lx", prompt: "Move Left Stick LEFT", expectedSign: -1 },
+      { kind: "axis", target: "ly", prompt: "Move Left Stick UP", expectedSign: -1 },
+      { kind: "axis", target: "rx", prompt: "Move Right Stick LEFT", expectedSign: -1 },
+      { kind: "axis", target: "ry", prompt: "Move Right Stick UP", expectedSign: -1 },
+    ];
+    const lastInputSignatureByPort = new Map();
+    let savedMappings = loadSavedMappings();
+    let bindWizard = null;
+    let rtcReconnectTimer = 0;
+    let lastGamepadSignature = null;
+    let lastGamepadMoveAt = 0;
+    let lastInputSentAt = 0;
+    let lastAckAt = 0;
+    const rtcVideoChunkMap = new Map();
+    const rtcAudioChunkMap = new Map();
+
+    // Keyboard state (used as fallback when no gamepad is active).
     const buttons = {
       b: false,
       y: false,
@@ -313,38 +542,616 @@
       statusEl.className = `status ${kind}`;
     }
 
-    function transportState(ws, idleState = "closed") {
-      if (!ws) {
+    function transportState(socket, idleState = "closed") {
+      if (!socket) {
         return idleState;
       }
-      if (ws.readyState === WebSocket.OPEN) {
+      if (socket.readyState === WebSocket.OPEN) {
         return "open";
       }
-      if (ws.readyState === WebSocket.CONNECTING) {
+      if (socket.readyState === WebSocket.CONNECTING) {
         return "connecting";
       }
       return "closed";
     }
 
+    function dataChannelState(channel, idleState = "closed") {
+      if (!channel) {
+        return idleState;
+      }
+      if (channel.readyState === "open") {
+        return "open";
+      }
+      if (channel.readyState === "connecting") {
+        return "connecting";
+      }
+      return "closed";
+    }
+
+    function usingWebRtcTransport() {
+      return preferWebRtcTransport && typeof RTCPeerConnection !== "undefined";
+    }
+
     function updateTransport() {
+      if (usingWebRtcTransport()) {
+        const audioState = audioEnabled ? dataChannelState(rtcAudioDc, "idle") : "idle";
+        transportEl.innerHTML = `video: rtc-${dataChannelState(rtcVideoDc)}<br />audio: rtc-${audioState}<br />input: rtc-${dataChannelState(rtcInputDc)}`;
+        return;
+      }
       const audioState = audioEnabled ? transportState(audioWs) : "idle";
       transportEl.innerHTML = `video: ${transportState(videoWs)}<br />audio: ${audioState}<br />input: ${transportState(inputWs)}`;
     }
 
-    function sendInput() {
-      if (!inputWs || inputWs.readyState !== WebSocket.OPEN) {
+    function getSelectedPort() {
+      const raw = Number.parseInt(inputPortEl.value, 10);
+      const clamped = Number.isFinite(raw) ? Math.max(0, Math.min(7, raw)) : 0;
+      inputPortEl.value = `${clamped}`;
+      return clamped;
+    }
+
+    function copyKeyboardState() {
+      return {
+        buttons: { ...buttons },
+        axes: { ...axes },
+      };
+    }
+
+    function readStateSignature(state) {
+      return JSON.stringify([state.buttons, state.axes]);
+    }
+
+    function clamp01(value) {
+      return Math.max(0, Math.min(1, value));
+    }
+
+    function deepClone(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function createStandardMapping() {
+      return {
+        version: 1,
+        buttons: {
+          b: { type: "button", index: 0, threshold: 0.5 },
+          a: { type: "button", index: 1, threshold: 0.5 },
+          y: { type: "button", index: 2, threshold: 0.5 },
+          x: { type: "button", index: 3, threshold: 0.5 },
+          l: { type: "button", index: 4, threshold: 0.5 },
+          r: { type: "button", index: 5, threshold: 0.5 },
+          l2: { type: "button", index: 6, threshold: TRIGGER_THRESHOLD },
+          r2: { type: "button", index: 7, threshold: TRIGGER_THRESHOLD },
+          select: { type: "button", index: 8, threshold: 0.5 },
+          start: { type: "button", index: 9, threshold: 0.5 },
+          l3: { type: "button", index: 10, threshold: 0.5 },
+          r3: { type: "button", index: 11, threshold: 0.5 },
+          up: { type: "button", index: 12, threshold: 0.5 },
+          down: { type: "button", index: 13, threshold: 0.5 },
+          left: { type: "button", index: 14, threshold: 0.5 },
+          right: { type: "button", index: 15, threshold: 0.5 },
+        },
+        axes: {
+          lx: { type: "axis", index: 0, invert: false, deadzone: STICK_DEADZONE },
+          ly: { type: "axis", index: 1, invert: false, deadzone: STICK_DEADZONE },
+          rx: { type: "axis", index: 2, invert: false, deadzone: STICK_DEADZONE },
+          ry: { type: "axis", index: 3, invert: false, deadzone: STICK_DEADZONE },
+          l2: { type: "button-value", index: 6 },
+          r2: { type: "button-value", index: 7 },
+        },
+      };
+    }
+
+    function normalizeMapping(rawMapping) {
+      const mapping = createStandardMapping();
+      if (!rawMapping || typeof rawMapping !== "object") {
+        return mapping;
+      }
+
+      if (rawMapping.buttons && typeof rawMapping.buttons === "object") {
+        for (const [key, entry] of Object.entries(rawMapping.buttons)) {
+          if (entry && typeof entry === "object") {
+            mapping.buttons[key] = entry;
+          }
+        }
+      }
+
+      if (rawMapping.axes && typeof rawMapping.axes === "object") {
+        for (const [key, entry] of Object.entries(rawMapping.axes)) {
+          if (entry && typeof entry === "object") {
+            mapping.axes[key] = entry;
+          }
+        }
+      }
+
+      return mapping;
+    }
+
+    function loadSavedMappings() {
+      try {
+        const raw = localStorage.getItem(MAPPING_STORAGE_KEY);
+        if (!raw) {
+          return {};
+        }
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return {};
+        }
+        return parsed;
+      } catch {
+        return {};
+      }
+    }
+
+    function persistSavedMappings() {
+      try {
+        localStorage.setItem(MAPPING_STORAGE_KEY, JSON.stringify(savedMappings));
+      } catch {
+        // Ignore storage failures (private mode / storage disabled).
+      }
+    }
+
+    function gamepadProfileKey(gamepad) {
+      const id = typeof gamepad.id === "string" && gamepad.id.length > 0 ? gamepad.id : "unknown-gamepad";
+      const buttonCount = Array.isArray(gamepad.buttons) ? gamepad.buttons.length : gamepad.buttons?.length || 0;
+      const axisCount = Array.isArray(gamepad.axes) ? gamepad.axes.length : gamepad.axes?.length || 0;
+      return `${id}::b${buttonCount}::a${axisCount}`;
+    }
+
+    function captureRawSnapshot(gamepad) {
+      return {
+        buttons: Array.from(gamepad.buttons || [], (button) => {
+          const value = typeof button?.value === "number" && !Number.isNaN(button.value) ? button.value : 0;
+          return clamp01(value);
+        }),
+        axes: Array.from(gamepad.axes || [], (axis) => {
+          if (typeof axis !== "number" || Number.isNaN(axis)) {
+            return 0;
+          }
+          return Math.max(-1, Math.min(1, axis));
+        }),
+      };
+    }
+
+    function buttonValue(gamepad, index) {
+      const raw = gamepad.buttons[index]?.value;
+      if (typeof raw !== "number" || Number.isNaN(raw)) {
+        return 0;
+      }
+      return clamp01(raw);
+    }
+
+    function buttonPressed(gamepad, index) {
+      return Boolean(gamepad.buttons[index]?.pressed);
+    }
+
+    function axisRaw(gamepad, index) {
+      const raw = gamepad.axes[index];
+      if (typeof raw !== "number" || Number.isNaN(raw)) {
+        return 0;
+      }
+      return Math.max(-1, Math.min(1, raw));
+    }
+
+    function applyDeadzone(raw, deadzone = STICK_DEADZONE) {
+      if (Math.abs(raw) < deadzone) {
+        return 0;
+      }
+      return Math.max(-1, Math.min(1, raw));
+    }
+
+    function triggerFromAxis(raw, entry) {
+      const rest = typeof entry.rest === "number" ? entry.rest : 0;
+      const active = typeof entry.active === "number" ? entry.active : 1;
+      const delta = active - rest;
+
+      if (Math.abs(delta) >= 0.05) {
+        return clamp01((raw - rest) / delta);
+      }
+
+      if (raw < 0) {
+        return clamp01((raw + 1) / 2);
+      }
+      return clamp01(raw);
+    }
+
+    function readMappedButton(gamepad, entry) {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+
+      if (entry.type === "button") {
+        const threshold = typeof entry.threshold === "number" ? entry.threshold : 0.5;
+        return buttonPressed(gamepad, entry.index) || buttonValue(gamepad, entry.index) >= threshold;
+      }
+
+      if (entry.type === "axis-direction") {
+        const threshold = typeof entry.threshold === "number" ? entry.threshold : 0.55;
+        const projected = entry.positive ? axisRaw(gamepad, entry.index) : -axisRaw(gamepad, entry.index);
+        return projected >= threshold;
+      }
+
+      if (entry.type === "axis-threshold") {
+        const threshold = typeof entry.threshold === "number" ? entry.threshold : TRIGGER_THRESHOLD;
+        const value = triggerFromAxis(axisRaw(gamepad, entry.index), entry);
+        return value >= threshold;
+      }
+
+      return false;
+    }
+
+    function readMappedAxis(gamepad, entry) {
+      if (!entry || typeof entry !== "object") {
+        return 0;
+      }
+
+      if (entry.type === "axis") {
+        const scale = entry.invert ? -1 : 1;
+        const raw = axisRaw(gamepad, entry.index) * scale;
+        const deadzone = typeof entry.deadzone === "number" ? entry.deadzone : STICK_DEADZONE;
+        return applyDeadzone(raw, deadzone);
+      }
+
+      if (entry.type === "button-value") {
+        return buttonValue(gamepad, entry.index);
+      }
+
+      if (entry.type === "axis-trigger") {
+        return triggerFromAxis(axisRaw(gamepad, entry.index), entry);
+      }
+
+      return 0;
+    }
+
+    function getEffectiveMapping(gamepad) {
+      if (!gamepad) {
+        return { mode: "none", profileKey: null, mapping: createStandardMapping() };
+      }
+
+      const profileKey = gamepadProfileKey(gamepad);
+      const custom = savedMappings[profileKey];
+      if (custom) {
+        return { mode: "custom", profileKey, mapping: normalizeMapping(custom) };
+      }
+
+      if (gamepad.mapping === "standard") {
+        return { mode: "standard", profileKey, mapping: createStandardMapping() };
+      }
+
+      return { mode: "fallback", profileKey, mapping: createStandardMapping() };
+    }
+
+    function mappingModeLabel(mode) {
+      if (mode === "custom") {
+        return "custom saved map";
+      }
+      if (mode === "standard") {
+        return "browser standard map";
+      }
+      if (mode === "fallback") {
+        return "non-standard (using default map)";
+      }
+      return "keyboard fallback";
+    }
+
+    function renderMappingState(gamepad, mappingInfo = gamepad ? getEffectiveMapping(gamepad) : null) {
+      if (!gamepad || !mappingInfo) {
+        mappingStateEl.textContent = "mapping: keyboard fallback";
+        return;
+      }
+      mappingStateEl.textContent = `mapping: ${mappingModeLabel(mappingInfo.mode)}`;
+    }
+
+    function renderGamepadRaw(gamepad, mappingInfo = gamepad ? getEffectiveMapping(gamepad) : null) {
+      if (!gamepad || !mappingInfo) {
+        gamepadRawEl.textContent = "raw: waiting for controller";
+        renderMappingState(null, null);
         return;
       }
 
+      const id = gamepad.id.length > 62 ? `${gamepad.id.slice(0, 59)}...` : gamepad.id;
+      const buttonsRaw = [];
+      for (let i = 0; i < gamepad.buttons.length; i++) {
+        const value = buttonValue(gamepad, i);
+        if (value >= 0.08 || buttonPressed(gamepad, i)) {
+          const mark = buttonPressed(gamepad, i) ? "*" : "";
+          buttonsRaw.push(`${i}:${value.toFixed(2)}${mark}`);
+        }
+      }
+
+      const axesRaw = [];
+      for (let i = 0; i < gamepad.axes.length; i++) {
+        axesRaw.push(`${i}:${axisRaw(gamepad, i).toFixed(2)}`);
+      }
+
+      renderMappingState(gamepad, mappingInfo);
+      gamepadRawEl.textContent =
+        `id: ${id}\n` +
+        `profile: ${mappingInfo.profileKey}\n` +
+        `mode: ${mappingModeLabel(mappingInfo.mode)}\n` +
+        `buttons: ${buttonsRaw.length > 0 ? buttonsRaw.join(" ") : "-"}\n` +
+        `axes: ${axesRaw.join(" ")}`;
+    }
+
+    function setBindStatus(text) {
+      bindStateEl.textContent = text;
+    }
+
+    function updateBindButtons() {
+      const active = bindWizard !== null;
+      startBindEl.disabled = active;
+      skipBindEl.disabled = !active;
+      cancelBindEl.disabled = !active;
+    }
+
+    function showNextBindPrompt() {
+      if (!bindWizard) {
+        setBindStatus("wizard: idle");
+        return;
+      }
+
+      const step = BIND_STEPS[bindWizard.stepIndex];
+      if (!step) {
+        setBindStatus("wizard: completed");
+        return;
+      }
+
+      setBindStatus(`wizard ${bindWizard.stepIndex + 1}/${BIND_STEPS.length}: ${step.prompt}`);
+    }
+
+    function detectButtonCandidate(gamepad, baseline) {
+      let best = null;
+      for (let i = 0; i < gamepad.buttons.length; i++) {
+        const value = buttonValue(gamepad, i);
+        const previous = baseline?.buttons?.[i] || 0;
+        const delta = value - previous;
+        const score = Math.max(delta, value * 0.75);
+        if (value >= 0.65 && delta >= 0.20) {
+          if (!best || score > best.score) {
+            best = { type: "button", index: i, value, score };
+          }
+        }
+      }
+      return best;
+    }
+
+    function detectAxisCandidate(gamepad, baseline) {
+      let best = null;
+      for (let i = 0; i < gamepad.axes.length; i++) {
+        const raw = axisRaw(gamepad, i);
+        const previous = baseline?.axes?.[i] || 0;
+        const delta = raw - previous;
+        const score = Math.abs(delta);
+        if (Math.abs(raw) >= 0.55 && score >= 0.35) {
+          const sign = Math.abs(raw) >= 0.15 ? (raw >= 0 ? 1 : -1) : (delta >= 0 ? 1 : -1);
+          if (!best || score > best.score) {
+            best = { type: "axis", index: i, raw, previous, delta, score, sign };
+          }
+        }
+      }
+      return best;
+    }
+
+    function applyBindResult(step, candidate) {
+      if (!bindWizard) {
+        return;
+      }
+
+      const mapping = bindWizard.mapping;
+
+      if (step.kind === "axis" && candidate.type === "axis") {
+        const observed = candidate.sign || 1;
+        const invert = observed !== step.expectedSign;
+        mapping.axes[step.target] = { type: "axis", index: candidate.index, invert, deadzone: STICK_DEADZONE };
+        return;
+      }
+
+      if (step.kind === "trigger") {
+        if (candidate.type === "button") {
+          mapping.buttons[step.target] = { type: "button", index: candidate.index, threshold: TRIGGER_THRESHOLD };
+          mapping.axes[step.target] = { type: "button-value", index: candidate.index };
+        } else {
+          mapping.buttons[step.target] = {
+            type: "axis-threshold",
+            index: candidate.index,
+            rest: candidate.previous,
+            active: candidate.raw,
+            threshold: TRIGGER_THRESHOLD,
+          };
+          mapping.axes[step.target] = {
+            type: "axis-trigger",
+            index: candidate.index,
+            rest: candidate.previous,
+            active: candidate.raw,
+          };
+        }
+        return;
+      }
+
+      if (step.kind === "dpad") {
+        if (candidate.type === "button") {
+          mapping.buttons[step.target] = { type: "button", index: candidate.index, threshold: 0.5 };
+        } else {
+          mapping.buttons[step.target] = {
+            type: "axis-direction",
+            index: candidate.index,
+            positive: candidate.sign >= 0,
+            threshold: 0.6,
+          };
+        }
+        return;
+      }
+
+      if (candidate.type === "button") {
+        mapping.buttons[step.target] = { type: "button", index: candidate.index, threshold: 0.5 };
+      }
+    }
+
+    function processBindWizard(gamepad) {
+      if (!bindWizard) {
+        return;
+      }
+
+      if (gamepadProfileKey(gamepad) !== bindWizard.profileKey) {
+        bindWizard = null;
+        updateBindButtons();
+        setBindStatus("wizard: canceled (active controller changed)");
+        return;
+      }
+
+      const step = BIND_STEPS[bindWizard.stepIndex];
+      if (!step) {
+        return;
+      }
+
+      const buttonCandidate = detectButtonCandidate(gamepad, bindWizard.baseline);
+      const axisCandidate = detectAxisCandidate(gamepad, bindWizard.baseline);
+      let candidate = null;
+
+      if (step.kind === "axis") {
+        candidate = axisCandidate;
+      } else if (step.kind === "trigger") {
+        if (buttonCandidate && axisCandidate) {
+          candidate = buttonCandidate.score >= axisCandidate.score ? buttonCandidate : axisCandidate;
+        } else {
+          candidate = buttonCandidate || axisCandidate;
+        }
+      } else if (step.kind === "dpad") {
+        candidate = buttonCandidate || axisCandidate;
+      } else {
+        candidate = buttonCandidate;
+      }
+
+      if (!candidate) {
+        return;
+      }
+
+      applyBindResult(step, candidate);
+      bindWizard.stepIndex += 1;
+
+      if (bindWizard.stepIndex >= BIND_STEPS.length) {
+        savedMappings[bindWizard.profileKey] = normalizeMapping(bindWizard.mapping);
+        persistSavedMappings();
+        bindWizard = null;
+        updateBindButtons();
+        setBindStatus("wizard: mapping saved");
+        lastInputSignatureByPort.clear();
+        sendInput(currentPreferredInputState(), true);
+        return;
+      }
+
+      bindWizard.baseline = captureRawSnapshot(gamepad);
+      showNextBindPrompt();
+    }
+
+    function startBindWizard() {
+      const gamepad = getActiveGamepad();
+      if (!gamepad) {
+        setBindStatus("wizard: connect a gamepad first");
+        return;
+      }
+
+      const mappingInfo = getEffectiveMapping(gamepad);
+      bindWizard = {
+        profileKey: mappingInfo.profileKey,
+        mapping: deepClone(mappingInfo.mapping),
+        stepIndex: 0,
+        baseline: captureRawSnapshot(gamepad),
+      };
+      updateBindButtons();
+      showNextBindPrompt();
+    }
+
+    function skipBindWizardStep() {
+      if (!bindWizard) {
+        return;
+      }
+
+      const gamepad = getActiveGamepad();
+      bindWizard.stepIndex += 1;
+      if (bindWizard.stepIndex >= BIND_STEPS.length) {
+        savedMappings[bindWizard.profileKey] = normalizeMapping(bindWizard.mapping);
+        persistSavedMappings();
+        bindWizard = null;
+        updateBindButtons();
+        setBindStatus("wizard: mapping saved (with skipped steps)");
+        lastInputSignatureByPort.clear();
+        sendInput(currentPreferredInputState(), true);
+        return;
+      }
+
+      bindWizard.baseline = gamepad ? captureRawSnapshot(gamepad) : null;
+      showNextBindPrompt();
+    }
+
+    function cancelBindWizard() {
+      bindWizard = null;
+      updateBindButtons();
+      setBindStatus("wizard: canceled");
+    }
+
+    function clearSavedMappingForActivePad() {
+      const gamepad = getActiveGamepad();
+      if (!gamepad) {
+        setBindStatus("wizard: no active gamepad");
+        return;
+      }
+
+      const key = gamepadProfileKey(gamepad);
+      if (savedMappings[key]) {
+        delete savedMappings[key];
+        persistSavedMappings();
+        setBindStatus("wizard: cleared saved mapping for active gamepad");
+      } else {
+        setBindStatus("wizard: no saved mapping for active gamepad");
+      }
+
+      lastInputSignatureByPort.clear();
+      sendInput(currentPreferredInputState(), true);
+    }
+
+    function sendInput(state = copyKeyboardState(), force = false) {
+      const canSendWs = inputWs && inputWs.readyState === WebSocket.OPEN;
+      const canSendRtc = rtcInputDc && rtcInputDc.readyState === "open";
+      if (!canSendWs && !canSendRtc) {
+        return;
+      }
+
+      const port = getSelectedPort();
+      const signature = readStateSignature(state);
+      if (!force && lastInputSignatureByPort.get(port) === signature) {
+        return;
+      }
+
+      lastInputSignatureByPort.set(port, signature);
       const sequence = ++lastSequence;
       lastAckStart = performance.now();
-      inputWs.send(JSON.stringify({
+      const payload = JSON.stringify({
         type: "input",
-        port: 0,
+        port,
         sequence,
-        buttons,
-        axes,
-      }));
+        buttons: state.buttons,
+        axes: state.axes,
+      });
+      if (canSendRtc) {
+        rtcInputDc.send(payload);
+      } else {
+        inputWs.send(payload);
+      }
+      lastInputSentAt = performance.now();
+      renderBlinkenlights();
+    }
+
+    function handleInputServerText(text) {
+      try {
+        const payload = JSON.parse(text);
+        if (payload.type === "ack" && typeof payload.server_time_ms === "number") {
+          lastAckAt = performance.now();
+          renderBlinkenlights();
+          const latency = performance.now() - lastAckStart;
+          latencyEl.textContent = `ack: ${latency.toFixed(1)} ms`;
+        }
+      } catch {
+        // Ignore parse failures
+      }
     }
 
     function recomputeAnalogFromKeys() {
@@ -364,7 +1171,9 @@
           const [, buttonName] = keyMap[key];
           if (!buttons[buttonName]) {
             buttons[buttonName] = true;
-            sendInput();
+            if (!usingGamepadInput()) {
+              sendInput(copyKeyboardState());
+            }
           }
           event.preventDefault();
           return;
@@ -375,7 +1184,9 @@
           heldAnalogKeys.add(key);
           if (heldAnalogKeys.size !== size) {
             recomputeAnalogFromKeys();
-            sendInput();
+            if (!usingGamepadInput()) {
+              sendInput(copyKeyboardState());
+            }
           }
           event.preventDefault();
         }
@@ -388,7 +1199,9 @@
           const [, buttonName] = keyMap[key];
           if (buttons[buttonName]) {
             buttons[buttonName] = false;
-            sendInput();
+            if (!usingGamepadInput()) {
+              sendInput(copyKeyboardState());
+            }
           }
           event.preventDefault();
           return;
@@ -398,11 +1211,622 @@
           const had = heldAnalogKeys.delete(key);
           if (had) {
             recomputeAnalogFromKeys();
-            sendInput();
+            if (!usingGamepadInput()) {
+              sendInput(copyKeyboardState());
+            }
           }
           event.preventDefault();
         }
       });
+    }
+
+    function setupGamepad() {
+      if (!("getGamepads" in navigator)) {
+        gamepadStateEl.textContent = "gamepad: unsupported in this browser";
+        renderBlinkenlights(false);
+        renderGamepadRaw(null, null);
+        updateBindButtons();
+        return;
+      }
+
+      window.addEventListener("gamepadconnected", () => {
+        refreshGamepadBinding();
+        const gamepad = getActiveGamepad();
+        if (gamepad) {
+          sendInput(readGamepadState(gamepad), true);
+        }
+        renderBlinkenlights(true);
+        renderGamepadRaw(gamepad, gamepad ? getEffectiveMapping(gamepad) : null);
+      });
+
+      window.addEventListener("gamepaddisconnected", () => {
+        const hadGamepad = usingGamepadInput();
+        refreshGamepadBinding();
+        if (hadGamepad && !usingGamepadInput()) {
+          // Reset to keyboard state when controller disappears.
+          sendInput(copyKeyboardState(), true);
+        }
+        renderBlinkenlights(usingGamepadInput());
+        if (!usingGamepadInput() && bindWizard) {
+          setBindStatus("wizard: waiting for controller reconnect");
+        }
+      });
+
+      refreshGamepadBinding();
+      if (!gamepadLoopHandle) {
+        gamepadLoopHandle = requestAnimationFrame(pollGamepad);
+      }
+    }
+
+    function refreshGamepadBinding() {
+      const connected = getConnectedGamepads();
+
+      if (connected.length === 0) {
+        activeGamepadIndex = null;
+        gamepadStateEl.textContent = "gamepad: none (keyboard active)";
+        renderBlinkenlights(false);
+        renderGamepadRaw(null, null);
+        return;
+      }
+
+      if (!connected.some((pad) => pad.index === activeGamepadIndex)) {
+        activeGamepadIndex = connected[0].index;
+      }
+
+      const active = connected.find((pad) => pad.index === activeGamepadIndex) || connected[0];
+      activeGamepadIndex = active.index;
+      const id = active.id.length > 42 ? `${active.id.slice(0, 39)}...` : active.id;
+      gamepadStateEl.textContent = `gamepad: #${active.index} ${id}`;
+      renderBlinkenlights(true);
+      renderGamepadRaw(active, getEffectiveMapping(active));
+    }
+
+    function getConnectedGamepads() {
+      if (!navigator.getGamepads) {
+        return [];
+      }
+      return Array.from(navigator.getGamepads()).filter(Boolean);
+    }
+
+    function getActiveGamepad() {
+      if (!navigator.getGamepads) {
+        return null;
+      }
+
+      const gamepads = navigator.getGamepads();
+      if (activeGamepadIndex !== null) {
+        const active = gamepads[activeGamepadIndex];
+        if (active) {
+          return active;
+        }
+      }
+
+      for (const gamepad of gamepads) {
+        if (gamepad) {
+          activeGamepadIndex = gamepad.index;
+          return gamepad;
+        }
+      }
+
+      activeGamepadIndex = null;
+      return null;
+    }
+
+    function usingGamepadInput() {
+      return getActiveGamepad() !== null;
+    }
+
+    function setLightState(el, isOn, isWarn = false) {
+      if (!el) {
+        return;
+      }
+      el.classList.toggle("is-on", isOn);
+      el.classList.toggle("is-warn", !isOn && isWarn);
+    }
+
+    function renderBlinkenlights(hasGamepad = usingGamepadInput()) {
+      const now = performance.now();
+      setLightState(lightPadEl, hasGamepad, true);
+      setLightState(lightMoveEl, now - lastGamepadMoveAt < BLINK_WINDOW_MS);
+      setLightState(lightTxEl, now - lastInputSentAt < BLINK_WINDOW_MS);
+      setLightState(lightAckEl, now - lastAckAt < BLINK_WINDOW_MS);
+    }
+
+    function pollGamepad() {
+      const gamepad = getActiveGamepad();
+      if (gamepad) {
+        processBindWizard(gamepad);
+        const mappingInfo = getEffectiveMapping(gamepad);
+        const state = readGamepadState(gamepad, mappingInfo);
+        const signature = readStateSignature(state);
+        if (signature !== lastGamepadSignature) {
+          lastGamepadSignature = signature;
+          lastGamepadMoveAt = performance.now();
+        }
+        sendInput(state);
+        renderGamepadRaw(gamepad, mappingInfo);
+      } else {
+        lastGamepadSignature = null;
+        renderGamepadRaw(null, null);
+      }
+      renderBlinkenlights(Boolean(gamepad));
+      gamepadLoopHandle = requestAnimationFrame(pollGamepad);
+    }
+
+    function readGamepadState(gamepad, mappingInfo = getEffectiveMapping(gamepad)) {
+      const mapping = mappingInfo.mapping;
+      const stateButtons = {};
+      for (const field of DIGITAL_FIELDS) {
+        stateButtons[field] = readMappedButton(gamepad, mapping.buttons[field]);
+      }
+
+      const stateAxes = {};
+      for (const field of AXIS_FIELDS) {
+        stateAxes[field] = readMappedAxis(gamepad, mapping.axes[field]);
+      }
+
+      stateAxes.lx = Math.max(-1, Math.min(1, stateAxes.lx || 0));
+      stateAxes.ly = Math.max(-1, Math.min(1, stateAxes.ly || 0));
+      stateAxes.rx = Math.max(-1, Math.min(1, stateAxes.rx || 0));
+      stateAxes.ry = Math.max(-1, Math.min(1, stateAxes.ry || 0));
+      stateAxes.l2 = clamp01(stateAxes.l2 || 0);
+      stateAxes.r2 = clamp01(stateAxes.r2 || 0);
+
+      stateButtons.l2 = stateButtons.l2 || stateAxes.l2 >= TRIGGER_THRESHOLD;
+      stateButtons.r2 = stateButtons.r2 || stateAxes.r2 >= TRIGGER_THRESHOLD;
+
+      return {
+        buttons: stateButtons,
+        axes: stateAxes,
+      };
+    }
+
+    function currentPreferredInputState() {
+      const gamepad = getActiveGamepad();
+      if (gamepad) {
+        return readGamepadState(gamepad);
+      }
+      return copyKeyboardState();
+    }
+
+    function pruneRtcChunkMap(map, now = performance.now()) {
+      for (const [messageId, entry] of map.entries()) {
+        if (now - entry.createdAt > RTC_CHUNK_TTL_MS) {
+          map.delete(messageId);
+        }
+      }
+    }
+
+    function decodeRtcChunk(buffer) {
+      const view = new DataView(buffer);
+      if (view.byteLength < RTC_CHUNK_HEADER_LEN) {
+        return null;
+      }
+      if (view.getUint32(0, true) !== RTC_CHUNK_MAGIC) {
+        return null;
+      }
+      const messageId = view.getUint32(4, true);
+      const chunkIndex = view.getUint16(8, true);
+      const totalChunks = view.getUint16(10, true);
+      if (totalChunks < 1 || chunkIndex >= totalChunks) {
+        return null;
+      }
+      const payloadView = new Uint8Array(buffer, RTC_CHUNK_HEADER_LEN, view.byteLength - RTC_CHUNK_HEADER_LEN);
+      return {
+        messageId,
+        chunkIndex,
+        totalChunks,
+        payload: payloadView.slice(),
+      };
+    }
+
+    function tryReassembleRtcPacket(map, chunk) {
+      pruneRtcChunkMap(map);
+      let entry = map.get(chunk.messageId);
+      if (!entry) {
+        entry = {
+          totalChunks: chunk.totalChunks,
+          parts: new Array(chunk.totalChunks),
+          received: 0,
+          totalBytes: 0,
+          createdAt: performance.now(),
+        };
+        map.set(chunk.messageId, entry);
+      }
+
+      if (entry.totalChunks !== chunk.totalChunks) {
+        map.delete(chunk.messageId);
+        return null;
+      }
+
+      if (!entry.parts[chunk.chunkIndex]) {
+        entry.parts[chunk.chunkIndex] = chunk.payload;
+        entry.received += 1;
+        entry.totalBytes += chunk.payload.length;
+      }
+
+      if (entry.received !== entry.totalChunks) {
+        return null;
+      }
+
+      const out = new Uint8Array(entry.totalBytes);
+      let offset = 0;
+      for (const part of entry.parts) {
+        if (!part) {
+          map.delete(chunk.messageId);
+          return null;
+        }
+        out.set(part, offset);
+        offset += part.length;
+      }
+
+      map.delete(chunk.messageId);
+      return out.buffer;
+    }
+
+    function decodeRtcPayload(map, eventData) {
+      if (!(eventData instanceof ArrayBuffer)) {
+        return null;
+      }
+      const chunk = decodeRtcChunk(eventData);
+      if (!chunk) {
+        return null;
+      }
+      return tryReassembleRtcPacket(map, chunk);
+    }
+
+    function decodeVp8VideoPacket(buffer) {
+      const view = new DataView(buffer);
+      if (view.byteLength < VP8_VIDEO_HEADER_LEN) {
+        return null;
+      }
+      if (view.getUint32(0, true) !== VP8_VIDEO_MAGIC) {
+        return null;
+      }
+
+      const ptsUs = typeof view.getBigUint64 === "function"
+        ? Number(view.getBigUint64(4, true))
+        : (view.getUint32(8, true) * 4294967296) + view.getUint32(4, true);
+      const durationUs = view.getUint32(12, true);
+      const flags = view.getUint8(16);
+      const payloadLen = view.getUint32(17, true);
+      if (VP8_VIDEO_HEADER_LEN + payloadLen > view.byteLength) {
+        return null;
+      }
+
+      return {
+        ptsUs,
+        durationUs,
+        keyframe: (flags & 0x01) !== 0,
+        payload: new Uint8Array(buffer, VP8_VIDEO_HEADER_LEN, payloadLen),
+      };
+    }
+
+    function supportsVp8WebCodecDecode() {
+      return typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined";
+    }
+
+    function ensureRtcVideoDecoder() {
+      if (!supportsVp8WebCodecDecode()) {
+        return false;
+      }
+      if (rtcVideoDecoderReady && rtcVideoDecoder) {
+        return true;
+      }
+
+      try {
+        rtcVideoDecoder = new VideoDecoder({
+          output: (frame) => {
+            if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+              canvas.width = frame.displayWidth;
+              canvas.height = frame.displayHeight;
+            }
+            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            const ptsMs = (rtcLastVideoPtsUs / 1000).toFixed(1);
+            frameMetaEl.textContent = `webrtc vp8 | pts ${ptsMs}ms | ${frame.displayWidth}x${frame.displayHeight}`;
+            frame.close();
+          },
+          error: () => {
+            rtcVideoDecoderReady = false;
+          },
+        });
+        rtcVideoDecoder.configure({
+          codec: "vp8",
+          optimizeForLatency: true,
+          hardwareAcceleration: "prefer-hardware",
+        });
+        rtcVideoDecoderReady = true;
+        return true;
+      } catch {
+        rtcVideoDecoderReady = false;
+        rtcVideoDecoder = null;
+        return false;
+      }
+    }
+
+    function decodeVp8WebCodecFrame(packet) {
+      if (!ensureRtcVideoDecoder()) {
+        return false;
+      }
+
+      try {
+        rtcLastVideoPtsUs = packet.ptsUs;
+        const chunk = new EncodedVideoChunk({
+          type: packet.keyframe ? "key" : "delta",
+          timestamp: packet.ptsUs,
+          duration: packet.durationUs,
+          data: packet.payload,
+        });
+        rtcVideoDecoder.decode(chunk);
+        return true;
+      } catch {
+        rtcVideoDecoderReady = false;
+        return false;
+      }
+    }
+
+    function scheduleWebRtcReconnect() {
+      if (!usingWebRtcTransport()) {
+        return;
+      }
+      if (rtcReconnectTimer) {
+        return;
+      }
+      rtcReconnectTimer = window.setTimeout(() => {
+        rtcReconnectTimer = 0;
+        connectWebRtc();
+      }, 900);
+    }
+
+    function closeWebRtcTransport() {
+      if (rtcVideoDc) {
+        try {
+          rtcVideoDc.close();
+        } catch {
+          // Ignore close failures.
+        }
+      }
+      if (rtcAudioDc) {
+        try {
+          rtcAudioDc.close();
+        } catch {
+          // Ignore close failures.
+        }
+      }
+      if (rtcInputDc) {
+        try {
+          rtcInputDc.close();
+        } catch {
+          // Ignore close failures.
+        }
+      }
+      rtcVideoDc = null;
+      rtcAudioDc = null;
+      rtcInputDc = null;
+
+      if (rtcPeer) {
+        try {
+          rtcPeer.close();
+        } catch {
+          // Ignore close failures.
+        }
+      }
+      rtcPeer = null;
+
+      if (rtcVideoDecoder) {
+        try {
+          rtcVideoDecoder.close();
+        } catch {
+          // Ignore decoder close failures.
+        }
+      }
+      rtcVideoDecoder = null;
+      rtcVideoDecoderReady = false;
+      rtcLastVideoPtsUs = 0;
+
+      rtcVideoChunkMap.clear();
+      rtcAudioChunkMap.clear();
+      updateTransport();
+    }
+
+    function waitForIceGatheringComplete(peer) {
+      if (peer.iceGatheringState === "complete") {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        const timeout = window.setTimeout(() => {
+          peer.removeEventListener("icegatheringstatechange", onState);
+          resolve();
+        }, 1800);
+
+        const onState = () => {
+          if (peer.iceGatheringState === "complete") {
+            window.clearTimeout(timeout);
+            peer.removeEventListener("icegatheringstatechange", onState);
+            resolve();
+          }
+        };
+
+        peer.addEventListener("icegatheringstatechange", onState);
+      });
+    }
+
+    async function postWebRtcOffer(localDescription) {
+      const requestedVideoMode = supportsVp8WebCodecDecode() ? "vp8" : "raw";
+      const response = await fetch(webrtcSessionUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          type: localDescription.type,
+          sdp: localDescription.sdp,
+          video_mode: requestedVideoMode,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`signaling failed: ${response.status} ${errorText}`);
+      }
+
+      const answer = await response.json();
+      if (!answer || answer.type !== "answer" || typeof answer.sdp !== "string") {
+        throw new Error("invalid signaling response");
+      }
+      return answer;
+    }
+
+    async function connectWebRtc() {
+      if (!usingWebRtcTransport()) {
+        return;
+      }
+
+      if (rtcReconnectTimer) {
+        window.clearTimeout(rtcReconnectTimer);
+        rtcReconnectTimer = 0;
+      }
+
+      closeWebRtcTransport();
+      setStatus("webrtc connecting", "warn");
+
+      const peer = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+      rtcPeer = peer;
+
+      const videoChannel = peer.createDataChannel("video", {
+        ordered: false,
+        maxRetransmits: 0,
+      });
+      videoChannel.binaryType = "arraybuffer";
+      rtcVideoDc = videoChannel;
+
+      const audioChannel = peer.createDataChannel("audio", {
+        ordered: true,
+        maxRetransmits: 2,
+      });
+      audioChannel.binaryType = "arraybuffer";
+      rtcAudioDc = audioChannel;
+
+      const inputChannel = peer.createDataChannel("input", {
+        ordered: false,
+        maxRetransmits: 0,
+      });
+      rtcInputDc = inputChannel;
+
+      peer.onconnectionstatechange = () => {
+        if (rtcPeer !== peer) {
+          return;
+        }
+        updateTransport();
+
+        if (peer.connectionState === "connected") {
+          setStatus("connected (webrtc)", "ok");
+          return;
+        }
+        if (peer.connectionState === "connecting") {
+          setStatus("webrtc connecting", "warn");
+          return;
+        }
+        if (peer.connectionState === "failed" || peer.connectionState === "disconnected" || peer.connectionState === "closed") {
+          setStatus("webrtc disconnected", "error");
+          scheduleWebRtcReconnect();
+        }
+      };
+
+      videoChannel.onopen = () => updateTransport();
+      videoChannel.onclose = () => updateTransport();
+      videoChannel.onerror = () => {
+        setStatus("webrtc video error", "error");
+      };
+      videoChannel.onmessage = (event) => {
+        const payloadBuffer = decodeRtcPayload(rtcVideoChunkMap, event.data);
+        if (!payloadBuffer) {
+          return;
+        }
+        const vp8Packet = decodeVp8VideoPacket(payloadBuffer);
+        if (vp8Packet) {
+          if (decodeVp8WebCodecFrame(vp8Packet)) {
+            return;
+          }
+        }
+        const packet = decodeFramePacket(payloadBuffer);
+        if (!packet) {
+          return;
+        }
+        renderFrame(packet);
+      };
+
+      audioChannel.onopen = () => {
+        updateTransport();
+        if (audioEnabled) {
+          audioStateEl.textContent = "state: connected";
+        }
+      };
+      audioChannel.onclose = () => {
+        updateTransport();
+        if (audioEnabled) {
+          audioStateEl.textContent = "state: reconnecting";
+        }
+      };
+      audioChannel.onerror = () => {
+        if (audioEnabled) {
+          audioStateEl.textContent = "state: transport error";
+        }
+      };
+      audioChannel.onmessage = (event) => {
+        const payloadBuffer = decodeRtcPayload(rtcAudioChunkMap, event.data);
+        if (!payloadBuffer) {
+          return;
+        }
+        const packet = decodeAudioPacket(payloadBuffer);
+        if (!packet) {
+          return;
+        }
+        enqueueAudioPacket(packet);
+      };
+
+      inputChannel.onopen = () => {
+        updateTransport();
+        sendInput(currentPreferredInputState(), true);
+      };
+      inputChannel.onclose = () => {
+        updateTransport();
+      };
+      inputChannel.onerror = () => {
+        setStatus("webrtc input error", "error");
+      };
+      inputChannel.onmessage = (event) => {
+        if (typeof event.data === "string") {
+          handleInputServerText(event.data);
+          return;
+        }
+        if (event.data instanceof ArrayBuffer) {
+          const text = new TextDecoder().decode(new Uint8Array(event.data));
+          handleInputServerText(text);
+        }
+      };
+
+      try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        await waitForIceGatheringComplete(peer);
+        const localDescription = peer.localDescription;
+        if (!localDescription) {
+          throw new Error("missing local description");
+        }
+        const answer = await postWebRtcOffer(localDescription);
+        await peer.setRemoteDescription(answer);
+        updateTransport();
+      } catch (err) {
+        if (rtcPeer === peer) {
+          setStatus("webrtc signaling failed", "error");
+          closeWebRtcTransport();
+          scheduleWebRtcReconnect();
+        }
+      }
     }
 
     function connectVideo() {
@@ -444,23 +1868,14 @@
       inputWs.onopen = () => {
         updateTransport();
         setStatus(videoWs?.readyState === 1 ? "connected" : "input connected", videoWs?.readyState === 1 ? "ok" : "warn");
-        sendInput();
+        sendInput(currentPreferredInputState(), true);
       };
 
       inputWs.onmessage = (event) => {
         if (typeof event.data !== "string") {
           return;
         }
-
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === "ack" && typeof payload.server_time_ms === "number") {
-            const latency = performance.now() - lastAckStart;
-            latencyEl.textContent = `ack: ${latency.toFixed(1)} ms`;
-          }
-        } catch {
-          // Ignore parse failures
-        }
+        handleInputServerText(event.data);
       };
 
       inputWs.onclose = () => {
@@ -500,6 +1915,16 @@
 
     function connectAudio() {
       if (!audioEnabled) {
+        return;
+      }
+
+      if (usingWebRtcTransport()) {
+        updateTransport();
+        if (rtcAudioDc?.readyState === "open") {
+          audioStateEl.textContent = "state: connected";
+        } else {
+          audioStateEl.textContent = "state: waiting for rtc audio";
+        }
         return;
       }
 
@@ -741,21 +2166,40 @@
     }
 
     audioButton.addEventListener("click", enableAudio);
+    inputPortEl.addEventListener("change", () => {
+      lastInputSignatureByPort.clear();
+      sendInput(currentPreferredInputState(), true);
+    });
+    startBindEl.addEventListener("click", startBindWizard);
+    skipBindEl.addEventListener("click", skipBindWizardStep);
+    cancelBindEl.addEventListener("click", cancelBindWizard);
+    clearBindEl.addEventListener("click", clearSavedMappingForActivePad);
 
+    updateBindButtons();
+    setBindStatus("wizard: idle");
     setupKeyboard();
-    connectVideo();
-    connectInput();
+    setupGamepad();
+    if (usingWebRtcTransport()) {
+      connectWebRtc();
+    } else {
+      connectVideo();
+      connectInput();
+    }
     updateTransport();
+    renderBlinkenlights();
+    renderGamepadRaw(null, null);
 
     setInterval(() => {
-      if (inputWs?.readyState === WebSocket.OPEN) {
+      if (rtcInputDc?.readyState === "open") {
+        rtcInputDc.send(JSON.stringify({ type: "ping", client_time_ms: Date.now() }));
+      } else if (inputWs?.readyState === WebSocket.OPEN) {
         inputWs.send(JSON.stringify({ type: "ping", client_time_ms: Date.now() }));
       }
     }, 1000);
 
     setInterval(() => {
-      sendInput();
-    }, 50);
+      sendInput(currentPreferredInputState(), true);
+    }, KEEPALIVE_INTERVAL_MS);
   </script>
 </body>
 </html>

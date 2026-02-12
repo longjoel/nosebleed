@@ -6,7 +6,7 @@ This document describes how external services and clients should consume `nosebl
 
 - One `nosebleed` process is expected per active match.
 - Matchmaking allocates/starts the process, then mints signed connection tickets for players/spectators.
-- Clients connect directly to this process over WebSocket.
+- Clients connect directly to this process over WebSocket or WebRTC.
 
 ## Startup (recommended)
 
@@ -62,8 +62,9 @@ Fields:
 - `WS /ws/video?token=...`
 - `WS /ws/audio?token=...`
 - `WS /ws/input?token=...`
+- `POST /webrtc/session?token=...`
 
-When `--require-auth` is enabled, all WS endpoints require a valid token.
+When `--require-auth` is enabled, all WS endpoints and WebRTC signaling require a valid token.
 
 ## Input ownership and reconnect
 
@@ -73,7 +74,7 @@ When `--require-auth` is enabled, all WS endpoints require a valid token.
 - During the lease window, only the same `player_id` can reclaim that port.
 - Other players are rejected from taking that port until the lease expires.
 
-## Input protocol (`/ws/input`)
+## Input protocol (`/ws/input` and WebRTC `input` DataChannel)
 
 Client -> server:
 
@@ -140,15 +141,109 @@ Layout:
 8. `payload_len u32`
 9. `payload bytes` (interleaved stereo PCM i16 LE)
 
+## WebRTC signaling and channels
+
+Signaling endpoint:
+
+- `POST /webrtc/session?token=...`
+
+Request:
+
+```json
+{
+  "type": "offer",
+  "sdp": "v=0...",
+  "video_mode": "vp8"
+}
+```
+
+Response:
+
+```json
+{
+  "type": "answer",
+  "sdp": "v=0..."
+}
+```
+
+Expected DataChannels:
+
+- `video`: binary chunk stream carrying `NBV1` VP8 packets when `video_mode=vp8`; otherwise `NBF0`.
+- `audio`: binary chunk stream carrying `NBA0` packets.
+- `input`: UTF-8 JSON input messages + `ack/error` responses.
+
+`video_mode` values:
+
+- `vp8`: attempt VP8 encoding via ffmpeg and emit `NBV1` packets.
+- `raw`: emit raw `NBF0` packets.
+
+If VP8 encoder startup fails, server falls back to raw `NBF0`.
+
+`NBV1` packet layout:
+
+1. `magic[4]` (`NBV1`)
+2. `pts_us u64`
+3. `duration_us u32`
+4. `flags u8` (bit0 = keyframe)
+5. `payload_len u32`
+6. `payload bytes` (VP8 frame)
+
+Chunk wire format (`NBC1`) used on `video`/`audio` channels:
+
+1. `magic[4]` (`NBC1`)
+2. `message_id u32` (little endian)
+3. `chunk_index u16` (little endian)
+4. `total_chunks u16` (little endian)
+5. `payload bytes`
+
 ## Client flow
 
 1. Obtain ticket from matchmaking.
-2. Connect to `/ws/video`, `/ws/audio`, `/ws/input` with `?token=...`.
+2. Connect using either:
+   - WebSocket: `/ws/video`, `/ws/audio`, `/ws/input`, or
+   - WebRTC: `POST /webrtc/session`, then open `video/audio/input` channels.
 3. Start sending input frames to assigned `port`.
 4. If disconnected, reconnect with a new ticket for the same `player_id` before lease expiry.
+
+## Browser Gamepad API
+
+When using a browser client (`navigator.getGamepads()`):
+
+- Poll gamepad state continuously (for example every animation frame).
+- Send `input` updates immediately on state change.
+- Also send heartbeat input updates even when unchanged (at least every 250 ms).
+- Use standard mapping indices:
+  - Buttons `0..15` for face/D-pad/shoulders/start/select/stick-click.
+  - Axes `0..3` for LX/LY/RX/RY.
+  - Trigger analog values from button `6` and `7` `value`.
+
+Browser connection checklist:
+
+1. Pair the controller in the OS first (USB or Bluetooth).
+2. Open the client over `https://` (or `http://localhost`) and keep the tab focused.
+3. Press any gamepad button once after the page is open.
+4. Send input to a valid `port`.
+5. Verify UI status lights:
+   - `PAD`: controller detected by browser
+   - `MOVE`: controller state changes are being read
+   - `TX`: input packets are being sent
+   - `ACK`: server acknowledgements are arriving
+
+Non-standard mapping workflow (recommended on Linux when mappings are wrong):
+
+1. Open `Gamepad Debug`.
+2. Start `Bind Wizard` and follow each prompt.
+3. Use `Skip Step` for controls your device does not expose.
+4. Mapping is saved per browser device profile in `localStorage`.
+5. Use `Clear Saved Map` to reset to default mapping.
 
 ## Operational notes
 
 - Keep the auth secret out of clients; only matchmaking signs tickets.
 - Keep ticket TTL short (for example 30-120 seconds).
-- For internet play, plan migration to WebRTC for media; keep `/ws/input` for control.
+- Current WebRTC mode is DataChannel packet transport; codec RTP tracks are still the next optimization step.
+- WebRTC VP8 encoding knobs:
+  - `NOSEBLEED_FFMPEG_BIN` (default `ffmpeg`)
+  - `NOSEBLEED_WEBRTC_VIDEO_ENCODER` (default `libvpx`; set VP8-capable hardware encoder per host)
+  - `NOSEBLEED_WEBRTC_VIDEO_ENCODER_ARGS` (optional extra ffmpeg args for hardware device/filter setup)
+  - `NOSEBLEED_WEBRTC_VIDEO_BITRATE_KBPS` (default `2500`)
