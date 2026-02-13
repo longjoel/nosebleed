@@ -3,8 +3,21 @@
   "private": true,
   "packageManager": "pnpm@10.4.1",
   "scripts": {
-    "build": "pnpm -r --if-present build",
-    "clean": "pnpm -r --if-present clean",
-    "build:sdk": "pnpm --filter @nosebleed/player-sdk build"
+    "build": "pnpm run build:web && pnpm run build:app",
+    "build:web": "pnpm run build:sdk",
+    "build:app": "cargo build -p nosebleed --release",
+    "build:sdk": "pnpm --filter @nosebleed/player-sdk build",
+    "dev": "pnpm run launch",
+    "start": "pnpm run launch",
+    "launch": "bash -lc 'cargo run -p nosebleed -- --listen \"${LISTEN_ADDR:-0.0.0.0:8080}\"'",
+    "launch:dev": "bash -lc 'cargo run -p nosebleed -- --listen \"${LISTEN_ADDR:-0.0.0.0:8080}\"'",
+    "launch:config": "bash -lc 'cargo run -p nosebleed -- --config \"${NOSEBLEED_CONFIG:-apps/nosebleed/nosebleed.config.json.example}\"'",
+    "start:artifact": "pnpm run launch:artifact",
+    "launch:artifact": "bash -lc './target/release/nosebleed --listen \"${LISTEN_ADDR:-0.0.0.0:8080}\"'",
+    "deploy": "pnpm run build && bash scripts/deploy-bundle.sh",
+    "deploy:app": "pnpm run build:app && bash scripts/deploy-bundle.sh",
+    "check": "cargo check -p nosebleed",
+    "smoke": "LISTEN_ADDR=127.0.0.1:8092 bash scripts/test-library.sh smoke",
+    "clean": "pnpm -r --if-present clean"
   }
 }

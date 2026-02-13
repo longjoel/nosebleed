@@ -3,6 +3,7 @@
 Web-first runtime for libretro (RetroArch core) execution with low-latency streaming and realtime virtual gamepad input over WebSockets.
 
 Commands in this file assume your working directory is `apps/nosebleed`.
+For standard build/launch from repo root, use `pnpm` scripts in `../../package.json`.
 
 Consumer integration guide: `docs/public-service.md`.
 Express integration pattern: `docs/express-wrapper.md`.

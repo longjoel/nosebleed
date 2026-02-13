@@ -9,33 +9,79 @@ Mixed Rust + Node/TypeScript repository for the arcade platform.
 - `docs`: Product and architecture docs for the virtual arcade.
 - `scripts`: Repo-level helper scripts.
 
-## Rust workspace
+## Command Surface (pnpm)
 
-Run the runtime from repo root:
+Use root `package.json` scripts as the single entrypoint for build/launch.
 
-```bash
-cargo run -p nosebleed -- --listen 0.0.0.0:8080
-```
-
-Run with example config:
-
-```bash
-cargo run -p nosebleed -- --config apps/nosebleed/nosebleed.config.json.example
-```
-
-## Node workspace
-
-Install and build all JS/TS packages:
+Install dependencies:
 
 ```bash
 pnpm install
+```
+
+Launch runtime in dev mode:
+
+```bash
+pnpm launch
+# alias: pnpm dev
+# alias: pnpm start
+```
+
+Override port/address:
+
+```bash
+LISTEN_ADDR=127.0.0.1:8092 pnpm launch
+```
+
+Launch runtime with example config:
+
+```bash
+pnpm launch:config
+```
+
+Override config path:
+
+```bash
+NOSEBLEED_CONFIG=/path/to/match.config.json pnpm launch:config
+```
+
+Build website packages + application artifact:
+
+```bash
 pnpm build
 ```
 
-Build only the player SDK:
+Build only the release artifact:
 
 ```bash
-pnpm --filter @nosebleed/player-sdk build
+pnpm build:app
+```
+
+Run built artifact directly:
+
+```bash
+pnpm launch:artifact
+# alias: pnpm start:artifact
+```
+
+Create deploy bundle (binary + config + static assets + runtime launcher):
+
+```bash
+pnpm deploy
+```
+
+Override output directory:
+
+```bash
+DEPLOY_DIR=./dist/prod pnpm deploy
+# or
+pnpm deploy -- ./dist/prod
+```
+
+Run smoke verification:
+
+```bash
+pnpm smoke
 ```
 
 ## Docs
