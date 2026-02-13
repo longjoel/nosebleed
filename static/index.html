@@ -429,6 +429,7 @@
     let rtcInputDc;
     let rtcVideoDecoder = null;
     let rtcVideoDecoderReady = false;
+    let rtcVp8DecodeSupported = null;
     let rtcLastVideoPtsUs = 0;
     let audioCtx;
     let audioGainNode;
@@ -1506,8 +1507,35 @@
       return typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined";
     }
 
-    function ensureRtcVideoDecoder() {
+    function probeVp8WebCodecDecode() {
+      if (rtcVp8DecodeSupported !== null) {
+        return rtcVp8DecodeSupported;
+      }
       if (!supportsVp8WebCodecDecode()) {
+        rtcVp8DecodeSupported = false;
+        return false;
+      }
+
+      try {
+        const probe = new VideoDecoder({
+          output: (frame) => frame.close(),
+          error: () => {},
+        });
+        probe.configure({
+          codec: "vp8",
+          optimizeForLatency: true,
+          hardwareAcceleration: "prefer-hardware",
+        });
+        probe.close();
+        rtcVp8DecodeSupported = true;
+      } catch {
+        rtcVp8DecodeSupported = false;
+      }
+      return rtcVp8DecodeSupported;
+    }
+
+    function ensureRtcVideoDecoder() {
+      if (!probeVp8WebCodecDecode()) {
         return false;
       }
       if (rtcVideoDecoderReady && rtcVideoDecoder) {
@@ -1653,7 +1681,7 @@
     }
 
     async function postWebRtcOffer(localDescription) {
-      const requestedVideoMode = supportsVp8WebCodecDecode() ? "vp8" : "raw";
+      const requestedVideoMode = probeVp8WebCodecDecode() ? "vp8" : "raw";
       const response = await fetch(webrtcSessionUrl, {
         method: "POST",
         headers: {
@@ -1981,8 +2009,8 @@
         return null;
       }
 
-      const sequence = Number(view.getBigUint64(4, true));
-      const timestampUs = Number(view.getBigUint64(12, true));
+      const sequence = readU64LittleEndian(view, 4);
+      const timestampUs = readU64LittleEndian(view, 12);
       const width = view.getUint32(20, true);
       const height = view.getUint32(24, true);
       const pitch = view.getUint32(28, true);
@@ -2002,6 +2030,13 @@
         pixelFormat,
         bytes: new Uint8Array(buffer, 37, payloadLen),
       };
+    }
+
+    function readU64LittleEndian(view, offset) {
+      if (typeof view.getBigUint64 === "function") {
+        return Number(view.getBigUint64(offset, true));
+      }
+      return (view.getUint32(offset + 4, true) * 4294967296) + view.getUint32(offset, true);
     }
 
     function decodeAudioPacket(buffer) {

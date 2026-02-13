@@ -1,4 +1,5 @@
 use std::ffi::{CString, c_char, c_void};
+use std::fs;
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use std::ptr;
@@ -98,6 +99,15 @@ struct RetroSystemInfo {
     block_extract: bool,
 }
 
+#[derive(Debug, Clone)]
+struct CoreLoadHints {
+    library_name: String,
+    library_version: String,
+    valid_extensions: String,
+    need_fullpath: bool,
+    block_extract: bool,
+}
+
 fn callback_context() -> &'static Mutex<CallbackContext> {
     static CONTEXT: OnceLock<Mutex<CallbackContext>> = OnceLock::new();
     CONTEXT.get_or_init(|| Mutex::new(CallbackContext::default()))
@@ -171,19 +181,42 @@ unsafe fn run_libretro_unsafe(
     // Some cores expose `retro_set_controller_port_device` but are unstable when frontends
     // call it directly. We rely on default core-side port mappings here.
 
+    let mut core_hints: Option<CoreLoadHints> = None;
     if let Some(get_info) = retro_get_system_info {
         let mut info = MaybeUninit::<RetroSystemInfo>::zeroed();
         unsafe { get_info(info.as_mut_ptr()) };
         let info = unsafe { info.assume_init() };
+        let library_name = c_string_or_unknown(info.library_name);
+        let library_version = c_string_or_unknown(info.library_version);
+        let valid_extensions = c_string_or_unknown(info.valid_extensions);
         eprintln!(
             "Loaded core: {} ({})",
-            c_string_or_unknown(info.library_name),
-            c_string_or_unknown(info.library_version)
+            library_name,
+            library_version
         );
+        eprintln!(
+            "Core content hints: valid_extensions={} need_fullpath={} block_extract={}",
+            valid_extensions, info.need_fullpath, info.block_extract
+        );
+        core_hints = Some(CoreLoadHints {
+            library_name,
+            library_version,
+            valid_extensions,
+            need_fullpath: info.need_fullpath,
+            block_extract: info.block_extract,
+        });
+    } else {
+        eprintln!("Loaded core: unknown (retro_get_system_info unavailable)");
     }
 
     // Keep C string storage alive for the core lifetime in case the core keeps a raw pointer.
     let content_cstr = if let Some(content_path) = &config.content_path {
+        if let Err(err) = log_content_file_details(content_path) {
+            eprintln!(
+                "failed to read content metadata for {}: {err:#}",
+                content_path.display()
+            );
+        }
         Some(
             CString::new(content_path.to_string_lossy().as_bytes()).with_context(|| {
                 format!(
@@ -196,11 +229,42 @@ unsafe fn run_libretro_unsafe(
         None
     };
 
+    let content_bytes = if let Some(content_path) = &config.content_path {
+        let should_preload = core_hints
+            .as_ref()
+            .map(|hints| !hints.need_fullpath)
+            .unwrap_or(true);
+        if should_preload {
+            match fs::read(content_path) {
+                Ok(bytes) => {
+                    eprintln!("content preload: {} bytes", bytes.len());
+                    Some(bytes)
+                }
+                Err(err) => {
+                    eprintln!(
+                        "content preload failed for {}: {err:#}",
+                        content_path.display()
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let loaded = if let Some(content_cstr) = &content_cstr {
+        let (data_ptr, data_len) = if let Some(bytes) = &content_bytes {
+            (bytes.as_ptr() as *const c_void, bytes.len())
+        } else {
+            (ptr::null(), 0)
+        };
         let game_info = RetroGameInfo {
             path: content_cstr.as_ptr(),
-            data: ptr::null(),
-            size: 0,
+            data: data_ptr,
+            size: data_len,
             meta: ptr::null(),
         };
 
@@ -210,6 +274,17 @@ unsafe fn run_libretro_unsafe(
     };
 
     if !loaded {
+        if let Some(content_path) = &config.content_path {
+            eprintln!(
+                "core rejected content path: {}",
+                content_path.display()
+            );
+            if let Some(hints) = &core_hints {
+                log_core_rejection_hints(hints, content_path);
+            }
+        } else {
+            eprintln!("core rejected load with null content (retro_load_game(NULL))");
+        }
         unsafe { retro_deinit() };
         clear_callback_context();
         bail!("core failed to load game/content");
@@ -411,5 +486,60 @@ fn c_string_or_unknown(ptr: *const c_char) -> String {
             .to_str()
             .map(|value| value.to_string())
             .unwrap_or_else(|_| "unknown".to_string())
+    }
+}
+
+fn log_content_file_details(content_path: &PathBuf) -> Result<()> {
+    let canonical = fs::canonicalize(content_path)
+        .with_context(|| format!("unable to resolve canonical path for {}", content_path.display()))?;
+    let metadata = fs::metadata(&canonical)
+        .with_context(|| format!("unable to stat content file {}", canonical.display()))?;
+    let file_type = if metadata.is_file() {
+        "file"
+    } else if metadata.is_dir() {
+        "directory"
+    } else {
+        "special"
+    };
+    eprintln!(
+        "content file: path={} canonical={} type={} size={} bytes readonly={}",
+        content_path.display(),
+        canonical.display(),
+        file_type,
+        metadata.len(),
+        metadata.permissions().readonly()
+    );
+    Ok(())
+}
+
+fn log_core_rejection_hints(hints: &CoreLoadHints, content_path: &PathBuf) {
+    eprintln!(
+        "load rejection context: core={} version={} valid_extensions={} need_fullpath={} block_extract={}",
+        hints.library_name,
+        hints.library_version,
+        hints.valid_extensions,
+        hints.need_fullpath,
+        hints.block_extract
+    );
+
+    if let Some(extension) = content_path.extension().and_then(|value| value.to_str()) {
+        let ext = extension.to_ascii_lowercase();
+        if !hints.valid_extensions.eq_ignore_ascii_case("unknown") {
+            let allowed = hints
+                .valid_extensions
+                .split('|')
+                .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            if !allowed.is_empty() && !allowed.iter().any(|value| value == &ext) {
+                eprintln!(
+                    "content extension mismatch: got .{} but core declares [{}]",
+                    ext,
+                    hints.valid_extensions
+                );
+            }
+        }
+    } else {
+        eprintln!("content has no file extension; core may require a known extension");
     }
 }
