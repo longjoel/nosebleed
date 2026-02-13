@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -29,6 +29,7 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
 use crate::input::InputHub;
 use crate::protocol::{
@@ -70,6 +71,7 @@ pub struct ServerState {
     pub next_client_id: Arc<AtomicU64>,
     pub auth: Arc<AuthConfig>,
     pub session_manager: Arc<SessionManager>,
+    pub arcade: Arc<ArcadeService>,
     input_sessions: Arc<std::sync::Mutex<InputSessionRegistry>>,
     rtc_sessions: Arc<std::sync::Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>,
     webrtc_api: Arc<webrtc::api::API>,
@@ -93,6 +95,7 @@ impl ServerState {
             next_client_id,
             auth,
             session_manager,
+            arcade: Arc::new(ArcadeService::new(6)),
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api: Arc::new(APIBuilder::new().build()),
@@ -119,6 +122,31 @@ struct WebRtcAnswer {
     #[serde(rename = "type")]
     kind: &'static str,
     sdp: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueJoinRequest {
+    player_name: String,
+    side: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueLeaveRequest {
+    ticket_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaimSeatRequest {
+    ticket_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoundEndRequest {
+    winner_side: String,
+    #[serde(default)]
+    left_score: u32,
+    #[serde(default)]
+    right_score: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -162,10 +190,17 @@ struct PortOwner {
 pub async fn run(state: ServerState, listen_addr: SocketAddr) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/arcade", get(arcade_index))
         .route("/healthz", get(healthz))
         .route("/session/status", get(session_status))
         .route("/session/start", post(session_start))
         .route("/session/stop", post(session_stop))
+        .route("/api/arcade/overview", get(arcade_overview))
+        .route("/api/arcade/machines/{id}", get(arcade_machine))
+        .route("/api/arcade/machines/{id}/queue/join", post(arcade_join_queue))
+        .route("/api/arcade/machines/{id}/queue/leave", post(arcade_leave_queue))
+        .route("/api/arcade/machines/{id}/claim", post(arcade_claim_seat))
+        .route("/api/arcade/machines/{id}/round/end", post(arcade_round_end))
         .route("/ws/video", get(video_ws))
         .route("/ws/audio", get(audio_ws))
         .route("/ws/input", get(input_ws))
@@ -186,6 +221,10 @@ async fn shutdown_signal(shutdown: Arc<AtomicBool>) {
 
 async fn index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
+}
+
+async fn arcade_index() -> Html<&'static str> {
+    Html(include_str!("../static/arcade.html"))
 }
 
 async fn healthz() -> &'static str {
@@ -215,6 +254,95 @@ async fn session_start(
 
 async fn session_stop(State(state): State<ServerState>) -> Json<SessionStatus> {
     Json(state.session_manager.stop())
+}
+
+async fn arcade_overview(State(state): State<ServerState>) -> Response {
+    Json(state.arcade.overview()).into_response()
+}
+
+async fn arcade_machine(Path(machine_id): Path<u32>, State(state): State<ServerState>) -> Response {
+    match state.arcade.machine(machine_id) {
+        Ok(machine) => Json(machine).into_response(),
+        Err(err) => arcade_error_response(err),
+    }
+}
+
+async fn arcade_join_queue(
+    Path(machine_id): Path<u32>,
+    State(state): State<ServerState>,
+    Json(request): Json<QueueJoinRequest>,
+) -> Response {
+    let side = match Side::parse(&request.side) {
+        Some(side) => side,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "side must be one of: left, right",
+            )
+                .into_response();
+        }
+    };
+
+    match state
+        .arcade
+        .join_queue(machine_id, request.player_name, side)
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(err) => arcade_error_response(err),
+    }
+}
+
+async fn arcade_leave_queue(
+    Path(machine_id): Path<u32>,
+    State(state): State<ServerState>,
+    Json(request): Json<QueueLeaveRequest>,
+) -> Response {
+    match state.arcade.leave_queue(machine_id, request.ticket_id) {
+        Ok(machine) => Json(machine).into_response(),
+        Err(err) => arcade_error_response(err),
+    }
+}
+
+async fn arcade_claim_seat(
+    Path(machine_id): Path<u32>,
+    State(state): State<ServerState>,
+    Json(request): Json<ClaimSeatRequest>,
+) -> Response {
+    match state.arcade.claim_seat(machine_id, request.ticket_id) {
+        Ok(machine) => Json(machine).into_response(),
+        Err(err) => arcade_error_response(err),
+    }
+}
+
+async fn arcade_round_end(
+    Path(machine_id): Path<u32>,
+    State(state): State<ServerState>,
+    Json(request): Json<RoundEndRequest>,
+) -> Response {
+    let winner_side = match Side::parse(&request.winner_side) {
+        Some(side) => side,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "winner_side must be one of: left, right",
+            )
+                .into_response();
+        }
+    };
+
+    match state.arcade.end_round(
+        machine_id,
+        winner_side,
+        request.left_score,
+        request.right_score,
+    ) {
+        Ok(machine) => Json(machine).into_response(),
+        Err(err) => arcade_error_response(err),
+    }
+}
+
+fn arcade_error_response(err: ArcadeError) -> Response {
+    (err.status_code(), err.message().to_string()).into_response()
 }
 
 async fn video_ws(

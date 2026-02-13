@@ -85,6 +85,15 @@ Example start payload:
 
 If `core` is omitted, runtime starts in mock mode.
 
+## Virtual Arcade API (MVP)
+
+- `GET /api/arcade/overview`
+- `GET /api/arcade/machines/:id`
+- `POST /api/arcade/machines/:id/queue/join`
+- `POST /api/arcade/machines/:id/queue/leave`
+- `POST /api/arcade/machines/:id/claim`
+- `POST /api/arcade/machines/:id/round/end`
+
 ## Browser gamepad quick start
 
 1. Pair the controller in your OS (USB or Bluetooth).
@@ -98,6 +107,10 @@ If `core` is omitted, runtime starts in mock mode.
    - `ACK` blinks when server acknowledgements arrive.
 6. If buttons/axes are wrong on Linux or non-standard pads, open `Gamepad Debug` and run `Start Bind Wizard` once per device profile.
 7. To test WebRTC transport in the probe, open `http://localhost:8080/?transport=webrtc`.
+
+Virtual arcade MVP UI:
+
+- `http://localhost:8080/arcade`
 
 ## WebSocket API
 

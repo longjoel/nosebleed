@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nosebleed Arcade</title>
+    <style>
+      :root {
+        --bg-0: #0b1018;
+        --bg-1: #141b2a;
+        --bg-2: #1f2940;
+        --ink: #eef2ff;
+        --ink-muted: #a8b5d1;
+        --line: #2e3a57;
+        --accent: #ff5d33;
+        --accent-soft: #ff9d57;
+        --ok: #30d28b;
+        --warn: #ffbf4d;
+        --danger: #ff4d6d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: "Trebuchet MS", "Verdana", sans-serif;
+        background:
+          radial-gradient(1200px 500px at 100% 0%, #1a2b4c 0%, transparent 55%),
+          radial-gradient(1000px 500px at 0% 100%, #35203f 0%, transparent 60%),
+          linear-gradient(145deg, var(--bg-0), var(--bg-1) 50%, #0a0d14);
+        min-height: 100vh;
+      }
+
+      .page {
+        width: min(1300px, 95vw);
+        margin: 24px auto 48px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 16px;
+        align-items: center;
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(255, 93, 51, 0.12), rgba(30, 36, 55, 0.45));
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(1.2rem, 2.5vw, 2rem);
+        letter-spacing: 0.06em;
+      }
+
+      .hero p {
+        margin: 6px 0 0;
+        color: var(--ink-muted);
+      }
+
+      .hero .clock {
+        text-align: right;
+        color: var(--accent-soft);
+        font-size: 0.95rem;
+      }
+
+      .layout {
+        margin-top: 18px;
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(21, 30, 49, 0.92), rgba(16, 22, 35, 0.88));
+        box-shadow: 0 10px 34px rgba(0, 0, 0, 0.25);
+      }
+
+      .panel-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-head h2 {
+        margin: 0;
+        font-size: 1rem;
+        letter-spacing: 0.04em;
+      }
+
+      .wall {
+        padding: 12px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .machine {
+        border: 1px solid #3a4668;
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(36, 48, 72, 0.8), rgba(26, 34, 52, 0.82));
+        padding: 10px;
+        cursor: pointer;
+        transition: transform 0.14s ease, border-color 0.14s ease;
+      }
+
+      .machine:hover {
+        transform: translateY(-2px);
+      }
+
+      .machine.active {
+        border-color: var(--accent-soft);
+        box-shadow: 0 0 0 1px rgba(255, 157, 87, 0.45) inset;
+      }
+
+      .machine-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .machine-name {
+        margin: 0;
+        font-size: 0.92rem;
+      }
+
+      .status {
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .status.free_play {
+        color: var(--warn);
+        border-color: rgba(255, 191, 77, 0.4);
+      }
+
+      .status.seat_call {
+        color: var(--accent-soft);
+        border-color: rgba(255, 157, 87, 0.45);
+      }
+
+      .status.match_live {
+        color: var(--ok);
+        border-color: rgba(48, 210, 139, 0.45);
+      }
+
+      .status.post_round {
+        color: var(--ink-muted);
+        border-color: rgba(168, 181, 209, 0.35);
+      }
+
+      .screen {
+        margin-top: 8px;
+        border: 1px solid #2a3652;
+        border-radius: 10px;
+        height: 86px;
+        position: relative;
+        overflow: hidden;
+        background:
+          linear-gradient(120deg, rgba(255, 93, 51, 0.18), rgba(87, 187, 255, 0.15)),
+          linear-gradient(180deg, #101729, #0d1220);
+      }
+
+      .screen::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(255, 255, 255, 0.04),
+          rgba(255, 255, 255, 0.04) 1px,
+          transparent 1px,
+          transparent 3px
+        );
+        pointer-events: none;
+      }
+
+      .screen::after {
+        content: "";
+        position: absolute;
+        inset: -30% -70%;
+        background: radial-gradient(circle at center, rgba(255, 157, 87, 0.26), transparent 55%);
+        animation: drift 5s ease-in-out infinite alternate;
+      }
+
+      @keyframes drift {
+        from {
+          transform: translate(-8%, -6%);
+        }
+        to {
+          transform: translate(8%, 6%);
+        }
+      }
+
+      .screen-label {
+        position: absolute;
+        right: 8px;
+        bottom: 7px;
+        z-index: 1;
+        color: #dde5ff;
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+      }
+
+      .seats,
+      .queues {
+        margin-top: 8px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        font-size: 0.78rem;
+      }
+
+      .chip {
+        border: 1px solid #36486d;
+        border-radius: 8px;
+        padding: 4px 6px;
+        background: rgba(13, 19, 31, 0.65);
+      }
+
+      .muted {
+        color: var(--ink-muted);
+      }
+
+      .detail {
+        padding: 12px 14px 16px;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .queues-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .queue-box {
+        border: 1px solid #334262;
+        border-radius: 10px;
+        padding: 8px;
+        min-height: 92px;
+        background: rgba(10, 15, 25, 0.45);
+      }
+
+      .queue-box h3 {
+        margin: 0 0 8px;
+        font-size: 0.82rem;
+        color: var(--accent-soft);
+      }
+
+      .queue-box ol {
+        margin: 0;
+        padding-left: 20px;
+        font-size: 0.78rem;
+      }
+
+      .queue-box li {
+        margin-bottom: 4px;
+      }
+
+      .controls {
+        margin-top: 12px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .controls input,
+      .controls select,
+      .controls button {
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid #324260;
+        background: #131b2b;
+        color: var(--ink);
+        padding: 8px 9px;
+        font: inherit;
+      }
+
+      .controls button {
+        border-color: rgba(255, 93, 51, 0.55);
+        background: linear-gradient(180deg, rgba(255, 93, 51, 0.28), rgba(145, 52, 29, 0.45));
+        cursor: pointer;
+      }
+
+      .controls button:hover {
+        filter: brightness(1.07);
+      }
+
+      .controls-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .error {
+        color: var(--danger);
+        font-size: 0.83rem;
+        min-height: 1.2em;
+      }
+
+      .side-panel {
+        padding: 10px 12px 14px;
+      }
+
+      .leaderboard {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.85rem;
+      }
+
+      .leaderboard li {
+        margin-bottom: 6px;
+      }
+
+      @media (max-width: 1040px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .wall {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          grid-template-columns: 1fr;
+        }
+
+        .hero .clock {
+          text-align: left;
+        }
+
+        .queues-list,
+        .detail-grid,
+        .controls-row,
+        .seats,
+        .queues {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div>
+          <h1>NOSEBLEED VIRTUAL ARCADE</h1>
+          <p>Six machines live. Pick a side, queue up, winner stays, daily high score climbs.</p>
+        </div>
+        <div class="clock" id="clock"></div>
+      </section>
+
+      <section class="layout">
+        <section class="panel">
+          <header class="panel-head">
+            <h2>Arcade Floor</h2>
+            <span class="muted" id="floor-meta"></span>
+          </header>
+          <div class="wall" id="wall"></div>
+        </section>
+
+        <aside class="panel">
+          <header class="panel-head">
+            <h2>Machine Control</h2>
+            <span class="muted" id="selected-machine-label">Machine 1</span>
+          </header>
+          <div class="side-panel">
+            <ol class="leaderboard" id="global-top"></ol>
+          </div>
+        </aside>
+      </section>
+
+      <section class="panel" style="margin-top: 16px">
+        <header class="panel-head">
+          <h2>Selected Machine Detail</h2>
+          <span class="muted" id="detail-status">Loading...</span>
+        </header>
+        <div class="detail" id="detail"></div>
+      </section>
+    </main>
+
+    <script>
+      const apiBase = "/api/arcade";
+      const storageKey = "nosebleed.arcade.machineTickets";
+
+      let selectedMachineId = 1;
+      let overview = null;
+      let machineDetail = null;
+
+      function loadTickets() {
+        try {
+          return JSON.parse(localStorage.getItem(storageKey) || "{}");
+        } catch {
+          return {};
+        }
+      }
+
+      function saveTickets(data) {
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+
+      function getTicket(machineId) {
+        const tickets = loadTickets();
+        return tickets[String(machineId)] || "";
+      }
+
+      function setTicket(machineId, ticketId) {
+        const tickets = loadTickets();
+        tickets[String(machineId)] = String(ticketId);
+        saveTickets(tickets);
+      }
+
+      function clearTicket(machineId) {
+        const tickets = loadTickets();
+        delete tickets[String(machineId)];
+        saveTickets(tickets);
+      }
+
+      async function request(path, options = {}) {
+        const response = await fetch(path, options);
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || "request failed");
+        }
+        return response.json();
+      }
+
+      function statusClass(status) {
+        return String(status || "free_play").replace(/[^a-z_]/g, "");
+      }
+
+      function statusText(status) {
+        return String(status || "free_play").replaceAll("_", " ").toUpperCase();
+      }
+
+      function formatMs(ms) {
+        const total = Math.max(0, Math.floor(ms / 1000));
+        const minutes = Math.floor(total / 60);
+        const seconds = total % 60;
+        return `${minutes}:${String(seconds).padStart(2, "0")}`;
+      }
+
+      function renderOverview() {
+        if (!overview) return;
+
+        document.getElementById("clock").textContent = `Updated ${new Date(
+          overview.now_unix_ms
+        ).toLocaleTimeString()}`;
+        document.getElementById("floor-meta").textContent = `Claim ${Math.floor(
+          overview.claim_timeout_ms / 1000
+        )}s, no-show cooldown ${Math.floor(overview.no_show_cooldown_ms / 1000)}s`;
+
+        const wall = document.getElementById("wall");
+        wall.innerHTML = overview.machines
+          .map((machine) => {
+            const called = machine.called
+              ? `<div class="chip">CALL ${machine.called.side.toUpperCase()} · ${machine.called.player_name} (${formatMs(
+                  machine.called.remaining_ms
+                )})</div>`
+              : `<div class="chip muted">No active seat call</div>`;
+            return `
+              <article class="machine ${machine.id === selectedMachineId ? "active" : ""}" data-machine="${machine.id}">
+                <div class="machine-top">
+                  <h3 class="machine-name">${machine.name}</h3>
+                  <span class="status ${statusClass(machine.status)}">${statusText(machine.status)}</span>
+                </div>
+                <div class="screen">
+                  <span class="screen-label">M${String(machine.id).padStart(2, "0")}</span>
+                </div>
+                <div class="seats">
+                  <div class="chip"><strong>L</strong> ${machine.left_player || "<span class='muted'>open</span>"}</div>
+                  <div class="chip"><strong>R</strong> ${machine.right_player || "<span class='muted'>open</span>"}</div>
+                </div>
+                <div class="queues">
+                  <div class="chip">L queue: ${machine.left_queue_len}</div>
+                  <div class="chip">R queue: ${machine.right_queue_len}</div>
+                </div>
+                <div style="margin-top:8px">${called}</div>
+              </article>
+            `;
+          })
+          .join("");
+
+        wall.querySelectorAll(".machine").forEach((node) => {
+          node.addEventListener("click", () => {
+            selectedMachineId = Number(node.dataset.machine);
+            refresh();
+          });
+        });
+
+        const globalTop = document.getElementById("global-top");
+        const rows = overview.daily_global_top || [];
+        if (rows.length === 0) {
+          globalTop.innerHTML = "<li class='muted'>No scores recorded yet today.</li>";
+        } else {
+          globalTop.innerHTML = rows
+            .map((row) => `<li><strong>${row.player_name}</strong> <span class="muted">${row.score}</span></li>`)
+            .join("");
+        }
+      }
+
+      function queueListHtml(items) {
+        if (!items || items.length === 0) return "<p class='muted'>Queue empty.</p>";
+        return `<ol>${items
+          .map(
+            (entry) =>
+              `<li>${entry.player_name} <span class="muted">#${entry.ticket_id}</span></li>`
+          )
+          .join("")}</ol>`;
+      }
+
+      function renderDetail() {
+        const container = document.getElementById("detail");
+        const statusNode = document.getElementById("detail-status");
+        const labelNode = document.getElementById("selected-machine-label");
+
+        if (!machineDetail) {
+          statusNode.textContent = "Loading...";
+          container.innerHTML = "<p class='muted'>Loading machine detail...</p>";
+          return;
+        }
+
+        statusNode.textContent = statusText(machineDetail.status);
+        labelNode.textContent = machineDetail.name;
+        const currentTicket = getTicket(machineDetail.id);
+
+        const called = machineDetail.called
+          ? `<div class="chip"><strong>Seat Call:</strong> ${machineDetail.called.player_name} on ${machineDetail.called.side} (ticket ${
+              machineDetail.called.ticket_id
+            }) · ${formatMs(machineDetail.called.remaining_ms)} left</div>`
+          : "<div class='chip muted'>No active seat call.</div>";
+
+        const lastRound = machineDetail.last_round
+          ? `<div class="chip"><strong>Last:</strong> #${machineDetail.last_round.round_id} ${
+              machineDetail.last_round.left_player
+            } ${machineDetail.last_round.left_score} - ${machineDetail.last_round.right_score} ${
+              machineDetail.last_round.right_player
+            }, winner ${machineDetail.last_round.winner_side.toUpperCase()}</div>`
+          : "<div class='chip muted'>No completed rounds yet.</div>";
+
+        const topRows =
+          machineDetail.daily_top && machineDetail.daily_top.length
+            ? `<ol class="leaderboard">${machineDetail.daily_top
+                .map(
+                  (row) => `<li><strong>${row.player_name}</strong> <span class="muted">${row.score}</span></li>`
+                )
+                .join("")}</ol>`
+            : "<p class='muted'>No machine scores yet today.</p>";
+
+        container.innerHTML = `
+          <div class="detail-grid">
+            <div class="chip"><strong>Left seat:</strong> ${machineDetail.left_player || "<span class='muted'>open</span>"}</div>
+            <div class="chip"><strong>Right seat:</strong> ${machineDetail.right_player || "<span class='muted'>open</span>"}</div>
+          </div>
+          <div style="margin-top:8px; display:grid; gap:8px;">
+            ${called}
+            ${lastRound}
+          </div>
+
+          <div class="queues-list">
+            <section class="queue-box">
+              <h3>Left Queue</h3>
+              ${queueListHtml(machineDetail.left_queue)}
+            </section>
+            <section class="queue-box">
+              <h3>Right Queue</h3>
+              ${queueListHtml(machineDetail.right_queue)}
+            </section>
+          </div>
+
+          <div style="margin-top:10px">
+            <h3 style="margin:0 0 8px; font-size:0.9rem; color:var(--accent-soft)">Machine Daily Top</h3>
+            ${topRows}
+          </div>
+
+          <form class="controls" id="queue-form">
+            <div class="controls-row">
+              <input id="player-name" placeholder="Player name" required maxlength="24" />
+              <select id="queue-side">
+                <option value="left">Left side</option>
+                <option value="right">Right side</option>
+              </select>
+            </div>
+            <button type="submit">Join Queue</button>
+
+            <div class="controls-row">
+              <input id="ticket-id" placeholder="Ticket id" value="${currentTicket}" />
+              <button type="button" id="claim-seat">Claim Seat</button>
+            </div>
+            <button type="button" id="leave-queue">Leave Queue</button>
+            <div class="controls-row">
+              <select id="winner-side">
+                <option value="left">Winner: Left</option>
+                <option value="right">Winner: Right</option>
+              </select>
+              <button type="button" id="end-round">End Round</button>
+            </div>
+            <div class="controls-row">
+              <input id="left-score" type="number" min="0" placeholder="Left score" value="0" />
+              <input id="right-score" type="number" min="0" placeholder="Right score" value="0" />
+            </div>
+            <div class="error" id="action-error"></div>
+          </form>
+        `;
+
+        bindDetailActions();
+      }
+
+      function showError(message) {
+        const node = document.getElementById("action-error");
+        if (node) node.textContent = message;
+      }
+
+      async function bindDetailActions() {
+        const machineId = machineDetail.id;
+        const queueForm = document.getElementById("queue-form");
+        queueForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          showError("");
+          const playerName = document.getElementById("player-name").value;
+          const side = document.getElementById("queue-side").value;
+          try {
+            const result = await request(`${apiBase}/machines/${machineId}/queue/join`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ player_name: playerName, side }),
+            });
+            setTicket(machineId, result.ticket_id);
+            await refresh();
+          } catch (error) {
+            showError(error.message);
+          }
+        });
+
+        document.getElementById("claim-seat").addEventListener("click", async () => {
+          showError("");
+          const ticketInput = document.getElementById("ticket-id");
+          const ticketId = Number(ticketInput.value || getTicket(machineId));
+          if (!ticketId) {
+            showError("ticket_id is required to claim a seat.");
+            return;
+          }
+          try {
+            await request(`${apiBase}/machines/${machineId}/claim`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ticket_id: ticketId }),
+            });
+            clearTicket(machineId);
+            await refresh();
+          } catch (error) {
+            showError(error.message);
+          }
+        });
+
+        document.getElementById("leave-queue").addEventListener("click", async () => {
+          showError("");
+          const ticketInput = document.getElementById("ticket-id");
+          const ticketId = Number(ticketInput.value || getTicket(machineId));
+          if (!ticketId) {
+            showError("ticket_id is required to leave queue.");
+            return;
+          }
+          try {
+            await request(`${apiBase}/machines/${machineId}/queue/leave`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ticket_id: ticketId }),
+            });
+            clearTicket(machineId);
+            await refresh();
+          } catch (error) {
+            showError(error.message);
+          }
+        });
+
+        document.getElementById("end-round").addEventListener("click", async () => {
+          showError("");
+          const winnerSide = document.getElementById("winner-side").value;
+          const leftScore = Number(document.getElementById("left-score").value || 0);
+          const rightScore = Number(document.getElementById("right-score").value || 0);
+          try {
+            await request(`${apiBase}/machines/${machineId}/round/end`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                winner_side: winnerSide,
+                left_score: leftScore,
+                right_score: rightScore,
+              }),
+            });
+            await refresh();
+          } catch (error) {
+            showError(error.message);
+          }
+        });
+      }
+
+      async function refresh() {
+        try {
+          overview = await request(`${apiBase}/overview`);
+          if (!overview.machines.some((machine) => machine.id === selectedMachineId)) {
+            selectedMachineId = overview.machines[0]?.id || 1;
+          }
+          machineDetail = await request(`${apiBase}/machines/${selectedMachineId}`);
+          renderOverview();
+          renderDetail();
+        } catch (error) {
+          document.getElementById("detail-status").textContent = "Error";
+          document.getElementById("detail").innerHTML = `<p class="error">${error.message}</p>`;
+        }
+      }
+
+      refresh();
+      setInterval(refresh, 1500);
+    </script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
 mod audio;
+mod arcade;
 mod auth;
 mod core;
 mod frame;

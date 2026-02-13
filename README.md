@@ -27,6 +27,12 @@ pnpm launch
 # alias: pnpm start
 ```
 
+Virtual arcade UI:
+
+```bash
+http://localhost:8080/arcade
+```
+
 Override port/address:
 
 ```bash
