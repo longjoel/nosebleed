@@ -2,6 +2,8 @@
 
 This document describes how external services and clients should consume `nosebleed` when used behind matchmaking for multiplayer.
 
+Commands in this file assume your working directory is `apps/nosebleed`.
+
 ## Service model
 
 - One `nosebleed` process is expected per active match.

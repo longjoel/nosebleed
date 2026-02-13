@@ -5,7 +5,7 @@ Browser TypeScript player library for consuming `nosebleed` video/audio/input st
 ## Install
 
 ```bash
-cd player-sdk
+cd packages/player-sdk
 npm install
 npm run build
 ```

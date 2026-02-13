@@ -3,8 +3,9 @@
 *.nes
 node_modules/
 package-lock.json
-player-sdk/dist/
-player-sdk/node_modules/
+packages/player-sdk/dist/
+packages/player-sdk/node_modules/
+apps/*/node_modules/
 
 # Added by cargo
 #

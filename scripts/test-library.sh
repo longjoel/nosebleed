@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CORE_PATH="${CORE_PATH:-${ROOT_DIR}/test-core.so}"
-ROM_PATH="${ROM_PATH:-${ROOT_DIR}/test-rom.gba}"
+ROM_PATH="${ROM_PATH:-${ROOT_DIR}/test-rom.nes}"
 LISTEN_ADDR="${LISTEN_ADDR:-127.0.0.1:8080}"
 HEALTH_URL="http://${LISTEN_ADDR}/healthz"
 LOG_FILE="${LOG_FILE:-${ROOT_DIR}/target/test-library.log}"
@@ -58,7 +58,7 @@ if [[ ${#ENV_ARGS[@]} -gt 0 ]]; then
   printf '\n'
 fi
 
-env "${ENV_ARGS[@]}" cargo run -- --listen "${LISTEN_ADDR}" --core "${CORE_PATH}" --content "${ROM_PATH}" >"${LOG_FILE}" 2>&1 &
+env "${ENV_ARGS[@]}" cargo run -p nosebleed -- --listen "${LISTEN_ADDR}" --core "${CORE_PATH}" --content "${ROM_PATH}" >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
