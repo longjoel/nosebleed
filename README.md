@@ -57,6 +57,18 @@ Build website packages + application artifact:
 pnpm build
 ```
 
+Build only the arcade website package:
+
+```bash
+pnpm build:arcade
+```
+
+Run the standalone arcade app (Express + React):
+
+```bash
+pnpm dev:arcade
+```
+
 Build only the release artifact:
 
 ```bash
