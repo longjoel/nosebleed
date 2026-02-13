@@ -26,6 +26,21 @@ Flags:
 - `--auth-secret`: HMAC signing secret shared with matchmaking (can also come from `NOSEBLEED_AUTH_SECRET`).
 - `--reconnect-window-ms`: lease hold window for disconnected player ports.
 
+Config-file startup (recommended for orchestration layers):
+
+```bash
+cargo run -- --config /srv/nosebleed/match-123.config.json
+```
+
+`--config` expects JSON. Relative paths inside the config are resolved relative to the config file directory. CLI flags override config values.
+
+Session workspace fields in config:
+
+- `session.root_dir`: parent directory for generated session folders.
+- `session.id`: logical session identifier (for folder naming).
+- `session.copy_core`: copy core into session folder before launch.
+- `session.copy_content`: copy content into session folder before launch.
+
 ## Connection ticket
 
 Token is supplied as query string: `?token=<ticket>`.
@@ -55,6 +70,36 @@ Fields:
 - `role`: `player`, `spectator`, or `observer`.
 - `allowed_ports`: required/non-empty for `player` role, each in `[0..7]`.
 - `exp_unix_ms`: hard expiration time (milliseconds since Unix epoch).
+
+
+## Control API
+
+For orchestration layers that keep one long-lived `nosebleed` worker process, use:
+
+- `GET /session/status`
+- `POST /session/start`
+- `POST /session/stop`
+
+`POST /session/start` body (all fields optional except what your flow requires):
+
+```json
+{
+  "core": "/path/to/core.so",
+  "content": "/path/to/rom.gba",
+  "fps": 60,
+  "width": 320,
+  "height": 240,
+  "force_restart": true,
+  "workspace": {
+    "root_dir": "/srv/nosebleed/sessions",
+    "id": "match-123",
+    "copy_core": false,
+    "copy_content": true
+  }
+}
+```
+
+When a session is already running and `force_restart` is false, server returns `409 Conflict`.
 
 ## Endpoints
 

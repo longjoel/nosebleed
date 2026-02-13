@@ -34,6 +34,7 @@ use crate::input::InputHub;
 use crate::protocol::{
     ClientMessage, ServerMessage, now_unix_ms, parse_client_message, serialize_server_message,
 };
+use crate::session::{SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus};
 
 const RTC_CHUNK_MAGIC: &[u8; 4] = b"NBC1";
 const RTC_CHUNK_HEADER_LEN: usize = 4 + 4 + 2 + 2;
@@ -68,6 +69,7 @@ pub struct ServerState {
     pub shutdown: Arc<AtomicBool>,
     pub next_client_id: Arc<AtomicU64>,
     pub auth: Arc<AuthConfig>,
+    pub session_manager: Arc<SessionManager>,
     input_sessions: Arc<std::sync::Mutex<InputSessionRegistry>>,
     rtc_sessions: Arc<std::sync::Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>,
     webrtc_api: Arc<webrtc::api::API>,
@@ -81,6 +83,7 @@ impl ServerState {
         shutdown: Arc<AtomicBool>,
         next_client_id: Arc<AtomicU64>,
         auth: Arc<AuthConfig>,
+        session_manager: Arc<SessionManager>,
     ) -> Self {
         Self {
             video_rx,
@@ -89,6 +92,7 @@ impl ServerState {
             shutdown,
             next_client_id,
             auth,
+            session_manager,
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api: Arc::new(APIBuilder::new().build()),
@@ -159,6 +163,9 @@ pub async fn run(state: ServerState, listen_addr: SocketAddr) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/healthz", get(healthz))
+        .route("/session/status", get(session_status))
+        .route("/session/start", post(session_start))
+        .route("/session/stop", post(session_stop))
         .route("/ws/video", get(video_ws))
         .route("/ws/audio", get(audio_ws))
         .route("/ws/input", get(input_ws))
@@ -183,6 +190,31 @@ async fn index() -> Html<&'static str> {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn session_status(State(state): State<ServerState>) -> Json<SessionStatus> {
+    Json(state.session_manager.status())
+}
+
+async fn session_start(
+    State(state): State<ServerState>,
+    Json(request): Json<SessionStartRequest>,
+) -> Response {
+    match state.session_manager.start_from_request(request) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            if message.contains("already running") {
+                (StatusCode::CONFLICT, message).into_response()
+            } else {
+                (StatusCode::BAD_REQUEST, message).into_response()
+            }
+        }
+    }
+}
+
+async fn session_stop(State(state): State<ServerState>) -> Json<SessionStatus> {
+    Json(state.session_manager.stop())
 }
 
 async fn video_ws(

@@ -1,6 +1,10 @@
 /target
 *.so
 *.nes
+node_modules/
+package-lock.json
+player-sdk/dist/
+player-sdk/node_modules/
 
 # Added by cargo
 #

@@ -1,0 +1,16 @@
+{
+  "listen": "0.0.0.0:8080",
+  "core": "./test-core.so",
+  "content": "./test-rom.gba",
+  "fps": 60,
+  "width": 320,
+  "height": 240,
+  "require_auth": false,
+  "reconnect_window_ms": 15000,
+  "session": {
+    "root_dir": "./target/sessions",
+    "id": "match-123",
+    "copy_core": false,
+    "copy_content": true
+  }
+}

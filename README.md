@@ -3,6 +3,8 @@
 Web-first runtime for libretro (RetroArch core) execution with low-latency streaming and realtime virtual gamepad input over WebSockets.
 
 Consumer integration guide: `docs/public-service.md`.
+Express integration pattern: `docs/express-wrapper.md`.
+TypeScript player SDK: `player-sdk/`.
 
 ## What this provides
 
@@ -34,6 +36,49 @@ Useful optional args:
 - `--fps 60`
 - `--width 320` (mock mode only)
 - `--height 240` (mock mode only)
+
+Run from a JSON config file:
+
+```bash
+cargo run -- --config ./nosebleed.config.json.example
+```
+
+Config precedence: CLI flags override values from `--config`.
+
+Session workspace options:
+
+- `--session-root /path/to/sessions`
+- `--session-id match-123`
+- `--session-copy-core`
+- `--session-copy-content`
+
+When session root is set, a per-session directory is created and a `session.json` manifest is written there. If copy flags are enabled, core/content files are copied into that directory and runtime uses the copied paths.
+
+
+## Control API
+
+Runtime session control endpoints are available over HTTP:
+
+- `GET /session/status`
+- `POST /session/start`
+- `POST /session/stop`
+
+Example start payload:
+
+```json
+{
+  "core": "./test-core.so",
+  "content": "./test-rom.gba",
+  "force_restart": true,
+  "workspace": {
+    "root_dir": "./target/sessions",
+    "id": "match-123",
+    "copy_content": true
+  }
+}
+```
+
+If `core` is omitted, runtime starts in mock mode.
 
 ## Browser gamepad quick start
 

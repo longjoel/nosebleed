@@ -6,23 +6,24 @@ mod input;
 mod libretro;
 mod protocol;
 mod server;
+mod session;
 
+use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
+use serde::Deserialize;
 
 use crate::audio::AudioBus;
-use crate::core::{MockCoreConfig, spawn_frame_dispatcher, spawn_mock_core};
 use crate::frame::LatestFrameStore;
 use crate::input::InputHub;
-use crate::libretro::LibretroRunConfig;
 use crate::server::ServerState;
+use crate::session::{LaunchConfig, SessionManager, WorkspaceConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,8 +32,11 @@ use crate::server::ServerState;
     about = "WebSocket-native low-latency frontend for libretro/RetroArch cores"
 )]
 struct Cli {
-    #[arg(long, default_value = "0.0.0.0:8080")]
-    listen: SocketAddr,
+    #[arg(long, value_name = "CONFIG_PATH")]
+    config: Option<PathBuf>,
+
+    #[arg(long)]
+    listen: Option<SocketAddr>,
 
     #[arg(long, value_name = "CORE_PATH")]
     core: Option<PathBuf>,
@@ -40,14 +44,14 @@ struct Cli {
     #[arg(long, value_name = "ROM_PATH")]
     content: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 60.0)]
-    fps: f32,
+    #[arg(long)]
+    fps: Option<f32>,
 
-    #[arg(long, default_value_t = 320)]
-    width: u32,
+    #[arg(long)]
+    width: Option<u32>,
 
-    #[arg(long, default_value_t = 240)]
-    height: u32,
+    #[arg(long)]
+    height: Option<u32>,
 
     #[arg(long, env = "NOSEBLEED_AUTH_SECRET")]
     auth_secret: Option<String>,
@@ -55,30 +59,75 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     require_auth: bool,
 
-    #[arg(long, default_value_t = 15_000)]
+    #[arg(long)]
+    reconnect_window_ms: Option<u64>,
+
+    #[arg(long)]
+    session_root: Option<PathBuf>,
+
+    #[arg(long)]
+    session_id: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    session_copy_core: bool,
+
+    #[arg(long, default_value_t = false)]
+    session_copy_content: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct FileConfig {
+    listen: Option<SocketAddr>,
+    core: Option<PathBuf>,
+    content: Option<PathBuf>,
+    fps: Option<f32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    auth_secret: Option<String>,
+    require_auth: Option<bool>,
+    reconnect_window_ms: Option<u64>,
+    session: Option<SessionConfig>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+struct SessionConfig {
+    root_dir: Option<PathBuf>,
+    id: Option<String>,
+    copy_core: Option<bool>,
+    copy_content: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct AppConfig {
+    listen: SocketAddr,
+    launch: LaunchConfig,
+    auth_secret: Option<String>,
+    require_auth: bool,
     reconnect_window_ms: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config = load_app_config(&cli)?;
 
     let frame_store = Arc::new(LatestFrameStore::default());
     let audio_bus = Arc::new(AudioBus::default());
     let input_hub = Arc::new(InputHub::default());
     let shutdown = Arc::new(AtomicBool::new(false));
-    let auth_config = build_auth_config(&cli)?;
+    let auth_config = build_auth_config(&config)?;
 
-    let (video_rx, dispatcher_handle) =
-        spawn_frame_dispatcher(frame_store.clone(), shutdown.clone());
+    let (video_rx, dispatcher_handle) = core::spawn_frame_dispatcher(frame_store.clone(), shutdown.clone());
 
-    let core_handle = spawn_core(
-        &cli,
-        frame_store.clone(),
+    let session_manager = Arc::new(SessionManager::new(
+        frame_store,
         audio_bus.clone(),
         input_hub.clone(),
-        shutdown.clone(),
-    );
+        config.launch.clone(),
+    ));
+    session_manager
+        .start(config.launch.clone(), true)
+        .context("failed to start initial runtime session")?;
 
     let server_state = ServerState::new(
         video_rx,
@@ -87,72 +136,109 @@ async fn main() -> Result<()> {
         shutdown.clone(),
         Arc::new(AtomicU64::new(1)),
         Arc::new(auth_config),
+        session_manager.clone(),
     );
 
-    let server_result = server::run(server_state, cli.listen).await;
+    eprintln!("starting server: listen={}", config.listen);
+    let server_result = server::run(server_state, config.listen).await;
 
     shutdown.store(true, Ordering::Relaxed);
-
     let _ = dispatcher_handle.join();
-
-    let core_result = match core_handle.join() {
-        Ok(result) => result,
-        Err(_) => Err(anyhow!("core thread panicked")),
-    };
+    let runtime_result = session_manager.shutdown_and_join();
 
     server_result.context("websocket server exited with an error")?;
-    core_result.context("core runtime exited with an error")?;
+    runtime_result.context("core runtime exited with an error")?;
 
     Ok(())
 }
 
-fn build_auth_config(cli: &Cli) -> Result<server::AuthConfig> {
-    if cli.require_auth && cli.auth_secret.is_none() {
+fn load_app_config(cli: &Cli) -> Result<AppConfig> {
+    let (file_config, config_dir) = if let Some(path) = &cli.config {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read config file {}", path.display()))?;
+        let parsed: FileConfig = serde_json::from_str(&raw)
+            .with_context(|| format!("invalid JSON in {}", path.display()))?;
+        let dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        (parsed, Some(dir))
+    } else {
+        (FileConfig::default(), None)
+    };
+
+    let mut session = file_config.session.unwrap_or_default();
+    if cli.session_root.is_some() {
+        session.root_dir = cli.session_root.clone();
+    }
+    if cli.session_id.is_some() {
+        session.id = cli.session_id.clone();
+    }
+    if cli.session_copy_core {
+        session.copy_core = Some(true);
+    }
+    if cli.session_copy_content {
+        session.copy_content = Some(true);
+    }
+
+    let mut core = cli.core.clone().or(file_config.core);
+    let mut content = cli.content.clone().or(file_config.content);
+    if let Some(base) = config_dir.as_ref() {
+        core = core.map(|path| resolve_relative_path(path, base));
+        content = content.map(|path| resolve_relative_path(path, base));
+        session.root_dir = session.root_dir.map(|path| resolve_relative_path(path, base));
+    }
+
+    let launch = LaunchConfig {
+        core,
+        content,
+        fps: cli.fps.or(file_config.fps).unwrap_or(60.0),
+        width: cli.width.or(file_config.width).unwrap_or(320),
+        height: cli.height.or(file_config.height).unwrap_or(240),
+        workspace: WorkspaceConfig {
+            root_dir: session.root_dir,
+            id: session.id,
+            copy_core: session.copy_core.unwrap_or(false),
+            copy_content: session.copy_content.unwrap_or(false),
+        },
+    };
+
+    Ok(AppConfig {
+        listen: cli.listen.or(file_config.listen).unwrap_or_else(|| {
+            "0.0.0.0:8080"
+                .parse()
+                .expect("hard-coded listen address should parse")
+        }),
+        launch,
+        auth_secret: cli.auth_secret.clone().or(file_config.auth_secret),
+        require_auth: cli.require_auth || file_config.require_auth.unwrap_or(false),
+        reconnect_window_ms: cli
+            .reconnect_window_ms
+            .or(file_config.reconnect_window_ms)
+            .unwrap_or(15_000),
+    })
+}
+
+fn resolve_relative_path(path: PathBuf, base: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    base.join(path)
+}
+
+fn build_auth_config(config: &AppConfig) -> Result<server::AuthConfig> {
+    if config.require_auth && config.auth_secret.is_none() {
         return Err(anyhow!(
             "--require-auth needs --auth-secret (or NOSEBLEED_AUTH_SECRET)"
         ));
     }
 
-    let reconnect_window = Duration::from_millis(cli.reconnect_window_ms.max(1_000));
-    let secret = cli
+    let reconnect_window = Duration::from_millis(config.reconnect_window_ms.max(1_000));
+    let secret = config
         .auth_secret
         .as_ref()
         .map(|value| Arc::<[u8]>::from(value.as_bytes().to_vec()));
 
     Ok(server::AuthConfig {
-        require_auth: cli.require_auth,
+        require_auth: config.require_auth,
         secret,
         reconnect_window,
     })
-}
-
-fn spawn_core(
-    cli: &Cli,
-    frame_store: Arc<LatestFrameStore>,
-    audio_bus: Arc<AudioBus>,
-    input_hub: Arc<InputHub>,
-    shutdown: Arc<AtomicBool>,
-) -> JoinHandle<Result<()>> {
-    if let Some(core_path) = &cli.core {
-        let config = LibretroRunConfig {
-            core_path: core_path.clone(),
-            content_path: cli.content.clone(),
-            fallback_fps: cli.fps,
-        };
-
-        std::thread::spawn(move || {
-            libretro::run_libretro(config, frame_store, audio_bus, input_hub, shutdown)
-        })
-    } else {
-        if cli.content.is_some() {
-            eprintln!("Ignoring --content because --core was not provided");
-        }
-
-        let config = MockCoreConfig {
-            width: cli.width,
-            height: cli.height,
-            fps: cli.fps,
-        };
-        spawn_mock_core(config, frame_store, audio_bus, input_hub, shutdown)
-    }
 }
