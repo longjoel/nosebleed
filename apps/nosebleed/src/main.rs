@@ -1,14 +1,3 @@
-mod audio;
-mod arcade;
-mod auth;
-mod core;
-mod frame;
-mod input;
-mod libretro;
-mod protocol;
-mod server;
-mod session;
-
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -20,11 +9,12 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use serde::Deserialize;
 
-use crate::audio::AudioBus;
-use crate::frame::LatestFrameStore;
-use crate::input::InputHub;
-use crate::server::ServerState;
-use crate::session::{LaunchConfig, SessionManager, WorkspaceConfig};
+use nosebleed::audio::AudioBus;
+use nosebleed::core as runtime_core;
+use nosebleed::frame::LatestFrameStore;
+use nosebleed::input::InputHub;
+use nosebleed::server::{self, ServerState};
+use nosebleed::session::{LaunchConfig, SessionManager, WorkspaceConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -118,7 +108,8 @@ async fn main() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let auth_config = build_auth_config(&config)?;
 
-    let (video_rx, dispatcher_handle) = core::spawn_frame_dispatcher(frame_store.clone(), shutdown.clone());
+    let (video_rx, dispatcher_handle) =
+        runtime_core::spawn_frame_dispatcher(frame_store.clone(), shutdown.clone());
 
     let session_manager = Arc::new(SessionManager::new(
         frame_store,
@@ -159,7 +150,10 @@ fn load_app_config(cli: &Cli) -> Result<AppConfig> {
             .with_context(|| format!("failed to read config file {}", path.display()))?;
         let parsed: FileConfig = serde_json::from_str(&raw)
             .with_context(|| format!("invalid JSON in {}", path.display()))?;
-        let dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         (parsed, Some(dir))
     } else {
         (FileConfig::default(), None)
@@ -184,7 +178,9 @@ fn load_app_config(cli: &Cli) -> Result<AppConfig> {
     if let Some(base) = config_dir.as_ref() {
         core = core.map(|path| resolve_relative_path(path, base));
         content = content.map(|path| resolve_relative_path(path, base));
-        session.root_dir = session.root_dir.map(|path| resolve_relative_path(path, base));
+        session.root_dir = session
+            .root_dir
+            .map(|path| resolve_relative_path(path, base));
     }
 
     let launch = LaunchConfig {

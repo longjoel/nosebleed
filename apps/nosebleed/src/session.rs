@@ -216,7 +216,10 @@ impl SessionManager {
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let should_take = state.active.as_ref().is_some_and(|runtime| runtime.handle.is_finished());
+            let should_take = state
+                .active
+                .as_ref()
+                .is_some_and(|runtime| runtime.handle.is_finished());
             if should_take {
                 state.active.take()
             } else {
@@ -365,7 +368,12 @@ fn prepare_session_workspace(launch: &mut LaunchConfig) -> Result<Option<PathBuf
         session_dir.join("session.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )
-    .with_context(|| format!("failed to write session manifest in {}", session_dir.display()))?;
+    .with_context(|| {
+        format!(
+            "failed to write session manifest in {}",
+            session_dir.display()
+        )
+    })?;
 
     eprintln!("session workspace ready: {}", session_dir.display());
     Ok(Some(session_dir))

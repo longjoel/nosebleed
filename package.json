@@ -1,6 +1,16 @@
 {
   "name": "nosebleed-monorepo",
   "private": true,
+  "description": "Web-first libretro runtime and browser player SDK for low-latency emulation streaming",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longjoel/nosebleed.git"
+  },
+  "homepage": "https://github.com/longjoel/nosebleed",
+  "bugs": {
+    "url": "https://github.com/longjoel/nosebleed/issues"
+  },
   "packageManager": "pnpm@10.4.1",
   "scripts": {
     "build": "pnpm run build:web && pnpm run build:app",

@@ -189,11 +189,7 @@ unsafe fn run_libretro_unsafe(
         let library_name = c_string_or_unknown(info.library_name);
         let library_version = c_string_or_unknown(info.library_version);
         let valid_extensions = c_string_or_unknown(info.valid_extensions);
-        eprintln!(
-            "Loaded core: {} ({})",
-            library_name,
-            library_version
-        );
+        eprintln!("Loaded core: {} ({})", library_name, library_version);
         eprintln!(
             "Core content hints: valid_extensions={} need_fullpath={} block_extract={}",
             valid_extensions, info.need_fullpath, info.block_extract
@@ -275,10 +271,7 @@ unsafe fn run_libretro_unsafe(
 
     if !loaded {
         if let Some(content_path) = &config.content_path {
-            eprintln!(
-                "core rejected content path: {}",
-                content_path.display()
-            );
+            eprintln!("core rejected content path: {}", content_path.display());
             if let Some(hints) = &core_hints {
                 log_core_rejection_hints(hints, content_path);
             }
@@ -490,8 +483,12 @@ fn c_string_or_unknown(ptr: *const c_char) -> String {
 }
 
 fn log_content_file_details(content_path: &PathBuf) -> Result<()> {
-    let canonical = fs::canonicalize(content_path)
-        .with_context(|| format!("unable to resolve canonical path for {}", content_path.display()))?;
+    let canonical = fs::canonicalize(content_path).with_context(|| {
+        format!(
+            "unable to resolve canonical path for {}",
+            content_path.display()
+        )
+    })?;
     let metadata = fs::metadata(&canonical)
         .with_context(|| format!("unable to stat content file {}", canonical.display()))?;
     let file_type = if metadata.is_file() {
@@ -534,8 +531,7 @@ fn log_core_rejection_hints(hints: &CoreLoadHints, content_path: &PathBuf) {
             if !allowed.is_empty() && !allowed.iter().any(|value| value == &ext) {
                 eprintln!(
                     "content extension mismatch: got .{} but core declares [{}]",
-                    ext,
-                    hints.valid_extensions
+                    ext, hints.valid_extensions
                 );
             }
         }

@@ -61,7 +61,9 @@ impl ArcadeError {
 
     pub fn message(&self) -> &str {
         match self {
-            Self::BadRequest(message) | Self::NotFound(message) | Self::Conflict(message) => message,
+            Self::BadRequest(message) | Self::NotFound(message) | Self::Conflict(message) => {
+                message
+            }
         }
     }
 }
@@ -278,7 +280,11 @@ impl ArcadeService {
 
         let day = day_key(now);
         let machine = find_machine(&inner, machine_id)?;
-        Ok(machine_detail_view(machine, now, collect_machine_top(&inner, day, machine_id)))
+        Ok(machine_detail_view(
+            machine,
+            now,
+            collect_machine_top(&inner, day, machine_id),
+        ))
     }
 
     pub fn join_queue(
@@ -356,7 +362,11 @@ impl ArcadeService {
         })
     }
 
-    pub fn leave_queue(&self, machine_id: u32, ticket_id: u64) -> Result<MachineDetailView, ArcadeError> {
+    pub fn leave_queue(
+        &self,
+        machine_id: u32,
+        ticket_id: u64,
+    ) -> Result<MachineDetailView, ArcadeError> {
         if ticket_id == 0 {
             return Err(ArcadeError::BadRequest(
                 "ticket_id must be a positive integer".to_string(),
@@ -405,10 +415,18 @@ impl ArcadeService {
 
         let day = day_key(now);
         let machine = find_machine(&inner, machine_id)?;
-        Ok(machine_detail_view(machine, now, collect_machine_top(&inner, day, machine_id)))
+        Ok(machine_detail_view(
+            machine,
+            now,
+            collect_machine_top(&inner, day, machine_id),
+        ))
     }
 
-    pub fn claim_seat(&self, machine_id: u32, ticket_id: u64) -> Result<MachineDetailView, ArcadeError> {
+    pub fn claim_seat(
+        &self,
+        machine_id: u32,
+        ticket_id: u64,
+    ) -> Result<MachineDetailView, ArcadeError> {
         if ticket_id == 0 {
             return Err(ArcadeError::BadRequest(
                 "ticket_id must be a positive integer".to_string(),
@@ -469,7 +487,11 @@ impl ArcadeService {
 
         let day = day_key(now);
         let machine = find_machine(&inner, machine_id)?;
-        Ok(machine_detail_view(machine, now, collect_machine_top(&inner, day, machine_id)))
+        Ok(machine_detail_view(
+            machine,
+            now,
+            collect_machine_top(&inner, day, machine_id),
+        ))
     }
 
     pub fn end_round(
@@ -547,7 +569,11 @@ impl ArcadeService {
         }
 
         let machine = find_machine(&inner, machine_id)?;
-        Ok(machine_detail_view(machine, now, collect_machine_top(&inner, day, machine_id)))
+        Ok(machine_detail_view(
+            machine,
+            now,
+            collect_machine_top(&inner, day, machine_id),
+        ))
     }
 
     fn housekeeping(&self, inner: &mut ArcadeState, now: u64) {
@@ -613,7 +639,10 @@ fn find_machine_index(inner: &ArcadeState, machine_id: u32) -> Result<usize, Arc
 
 fn player_has_active_ticket(inner: &ArcadeState, player_key: &str) -> bool {
     inner.machines.iter().any(|machine| {
-        machine.left_queue.iter().any(|entry| entry.player_key == player_key)
+        machine
+            .left_queue
+            .iter()
+            .any(|entry| entry.player_key == player_key)
             || machine
                 .right_queue
                 .iter()
@@ -675,11 +704,20 @@ fn machine_summary_view(machine: &MachineState, now: u64) -> MachineSummaryView 
         id: machine.id,
         name: machine.name.clone(),
         status: machine.status,
-        left_player: machine.left_player.as_ref().map(|player| player.player_name.clone()),
-        right_player: machine.right_player.as_ref().map(|player| player.player_name.clone()),
+        left_player: machine
+            .left_player
+            .as_ref()
+            .map(|player| player.player_name.clone()),
+        right_player: machine
+            .right_player
+            .as_ref()
+            .map(|player| player.player_name.clone()),
         left_queue_len: machine.left_queue.len(),
         right_queue_len: machine.right_queue.len(),
-        called: machine.called.as_ref().map(|called| seat_call_view(called, now)),
+        called: machine
+            .called
+            .as_ref()
+            .map(|called| seat_call_view(called, now)),
         last_round: machine.last_round.as_ref().map(round_result_view),
     }
 }
@@ -693,11 +731,20 @@ fn machine_detail_view(
         id: machine.id,
         name: machine.name.clone(),
         status: machine.status,
-        left_player: machine.left_player.as_ref().map(|player| player.player_name.clone()),
-        right_player: machine.right_player.as_ref().map(|player| player.player_name.clone()),
+        left_player: machine
+            .left_player
+            .as_ref()
+            .map(|player| player.player_name.clone()),
+        right_player: machine
+            .right_player
+            .as_ref()
+            .map(|player| player.player_name.clone()),
         left_queue: queue_view(&machine.left_queue),
         right_queue: queue_view(&machine.right_queue),
-        called: machine.called.as_ref().map(|called| seat_call_view(called, now)),
+        called: machine
+            .called
+            .as_ref()
+            .map(|called| seat_call_view(called, now)),
         last_round: machine.last_round.as_ref().map(round_result_view),
         daily_top,
     }
@@ -742,7 +789,9 @@ fn collect_machine_top(inner: &ArcadeState, day: u64, machine_id: u32) -> Vec<Da
     let mut rows: Vec<DailyScoreView> = inner
         .daily_machine_scores
         .iter()
-        .filter(|((score_day, score_machine_id, _), _)| *score_day == day && *score_machine_id == machine_id)
+        .filter(|((score_day, score_machine_id, _), _)| {
+            *score_day == day && *score_machine_id == machine_id
+        })
         .map(|(_, score)| DailyScoreView {
             player_name: score.player_name.clone(),
             score: score.score,

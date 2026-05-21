@@ -1,19 +1,26 @@
-/target
-/dist
-*.so
-*.nes
-node_modules/
-package-lock.json
-packages/player-sdk/dist/
-packages/player-sdk/node_modules/
-packages/*/dist/
-packages/*/node_modules/
-apps/*/node_modules/
-roms/
-# Added by cargo
-#
-# already existing elements were commented out
+# Rust
+/target/
+**/*.rs.bk
 
-#/target
-test-rom.gba
-nmajamtegen.md
+# Node / TypeScript
+/node_modules/
+**/node_modules/
+**/dist/
+.pnpm-store/
+
+# Logs / temp
+*.log
+*.tmp
+.DS_Store
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# IDE
+.vscode/
+.idea/

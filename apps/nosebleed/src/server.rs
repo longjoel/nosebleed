@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::str;
@@ -35,7 +35,9 @@ use crate::input::InputHub;
 use crate::protocol::{
     ClientMessage, ServerMessage, now_unix_ms, parse_client_message, serialize_server_message,
 };
-use crate::session::{SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus};
+use crate::session::{
+    SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus,
+};
 
 const RTC_CHUNK_MAGIC: &[u8; 4] = b"NBC1";
 const RTC_CHUNK_HEADER_LEN: usize = 4 + 4 + 2 + 2;
@@ -197,10 +199,19 @@ pub async fn run(state: ServerState, listen_addr: SocketAddr) -> Result<()> {
         .route("/session/stop", post(session_stop))
         .route("/api/arcade/overview", get(arcade_overview))
         .route("/api/arcade/machines/{id}", get(arcade_machine))
-        .route("/api/arcade/machines/{id}/queue/join", post(arcade_join_queue))
-        .route("/api/arcade/machines/{id}/queue/leave", post(arcade_leave_queue))
+        .route(
+            "/api/arcade/machines/{id}/queue/join",
+            post(arcade_join_queue),
+        )
+        .route(
+            "/api/arcade/machines/{id}/queue/leave",
+            post(arcade_leave_queue),
+        )
         .route("/api/arcade/machines/{id}/claim", post(arcade_claim_seat))
-        .route("/api/arcade/machines/{id}/round/end", post(arcade_round_end))
+        .route(
+            "/api/arcade/machines/{id}/round/end",
+            post(arcade_round_end),
+        )
         .route("/ws/video", get(video_ws))
         .route("/ws/audio", get(audio_ws))
         .route("/ws/input", get(input_ws))
@@ -275,11 +286,7 @@ async fn arcade_join_queue(
     let side = match Side::parse(&request.side) {
         Some(side) => side,
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "side must be one of: left, right",
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, "side must be one of: left, right").into_response();
         }
     };
 
@@ -492,7 +499,11 @@ async fn webrtc_session(
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                         sessions.remove(&rtc_session_id);
                     }
-                    cleanup_input_source_once(&state_for_close, &source_for_close, &cleanup_for_close);
+                    cleanup_input_source_once(
+                        &state_for_close,
+                        &source_for_close,
+                        &cleanup_for_close,
+                    );
                 }
             })
         }));
@@ -842,7 +853,7 @@ async fn rtc_video_channel_session_vp8(
                 let packet = encode_vp8_video_packet(&frame);
                 if send_packet_over_data_channel(&channel, packet.as_slice(), &mut next_message_id)
                     .await
-                .is_err()
+                    .is_err()
                 {
                     return;
                 }
@@ -928,7 +939,8 @@ impl Vp8IvfEncoder {
     async fn start(raw: &RawFramePacket) -> Result<Self> {
         let pix_fmt = ffmpeg_raw_pixel_format(raw.pixel_format)
             .ok_or_else(|| anyhow!("unsupported pixel format {}", raw.pixel_format))?;
-        let ffmpeg_binary = env::var("NOSEBLEED_FFMPEG_BIN").unwrap_or_else(|_| "ffmpeg".to_string());
+        let ffmpeg_binary =
+            env::var("NOSEBLEED_FFMPEG_BIN").unwrap_or_else(|_| "ffmpeg".to_string());
         let encoder_name =
             env::var("NOSEBLEED_WEBRTC_VIDEO_ENCODER").unwrap_or_else(|_| "libvpx".to_string());
         let encoder_args = env::var("NOSEBLEED_WEBRTC_VIDEO_ENCODER_ARGS").ok();
@@ -1173,9 +1185,7 @@ async fn read_ivf_frames(
 
         let frame_size = le_u32(&frame_header[0..4]) as usize;
         let timestamp = le_u64(&frame_header[4..12]);
-        let pts_us = ((u128::from(timestamp)
-            * u128::from(timebase_numerator)
-            * 1_000_000u128)
+        let pts_us = ((u128::from(timestamp) * u128::from(timebase_numerator) * 1_000_000u128)
             / u128::from(timebase_denominator))
         .min(u128::from(u64::MAX)) as u64;
 

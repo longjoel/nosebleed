@@ -2,3 +2,8 @@
 members = ["apps/nosebleed"]
 default-members = ["apps/nosebleed"]
 resolver = "2"
+
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/longjoel/nosebleed"
+homepage = "https://github.com/longjoel/nosebleed"

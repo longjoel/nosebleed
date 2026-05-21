@@ -2,12 +2,34 @@
   "name": "@nosebleed/player-sdk",
   "version": "0.1.0",
   "description": "Browser player SDK for nosebleed runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longjoel/nosebleed.git",
+    "directory": "packages/player-sdk"
+  },
+  "homepage": "https://github.com/longjoel/nosebleed/tree/master/packages/player-sdk",
+  "bugs": {
+    "url": "https://github.com/longjoel/nosebleed/issues"
+  },
+  "keywords": [
+    "libretro",
+    "emulation",
+    "game-streaming",
+    "websocket",
+    "webrtc"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "package.json"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist"

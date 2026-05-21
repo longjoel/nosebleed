@@ -2,6 +2,21 @@
 name = "nosebleed"
 version = "0.1.0"
 edition = "2024"
+description = "Web-first libretro runtime with low-latency browser video, audio, and input streaming"
+license = "MIT"
+repository = "https://github.com/longjoel/nosebleed"
+homepage = "https://github.com/longjoel/nosebleed"
+readme = "README.md"
+keywords = ["libretro", "emulation", "websocket", "webrtc", "game-streaming"]
+categories = ["emulators", "games", "web-programming::websocket"]
+
+[lib]
+name = "nosebleed"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nosebleed"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.98"
