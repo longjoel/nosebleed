@@ -13,6 +13,13 @@ const AUDIO_MAGIC: &[u8; 4] = b"NBA0";
 const AUDIO_SAMPLE_FORMAT_S16LE: u8 = 0;
 const AUDIO_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 1 + 1 + 4 + 4;
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientCommand {
+    Reset,
+    InsertCoin,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
@@ -23,6 +30,13 @@ pub enum ClientMessage {
         sequence: Option<u64>,
         #[serde(flatten)]
         update: InputUpdate,
+    },
+    Command {
+        command: ClientCommand,
+        #[serde(default)]
+        port: u32,
+        #[serde(default)]
+        sequence: Option<u64>,
     },
     Ping {
         #[serde(default)]

@@ -15,6 +15,21 @@ use crate::audio::AudioBus;
 use crate::frame::{LatestFrameStore, PixelFormat};
 use crate::input::InputHub;
 
+#[derive(Debug, Default)]
+pub struct RuntimeControl {
+    reset_requested: AtomicBool,
+}
+
+impl RuntimeControl {
+    pub fn request_reset(&self) {
+        self.reset_requested.store(true, Ordering::Relaxed);
+    }
+
+    pub fn take_reset_requested(&self) -> bool {
+        self.reset_requested.swap(false, Ordering::Relaxed)
+    }
+}
+
 const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: u32 = 10;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ANALOG: u32 = 5;
@@ -43,6 +58,7 @@ type RetroSetInputState = unsafe extern "C" fn(cb: RetroInputStateFn);
 type RetroInit = unsafe extern "C" fn();
 type RetroDeinit = unsafe extern "C" fn();
 type RetroRun = unsafe extern "C" fn();
+type RetroReset = unsafe extern "C" fn();
 type RetroLoadGame = unsafe extern "C" fn(game: *const RetroGameInfo) -> bool;
 type RetroUnloadGame = unsafe extern "C" fn();
 type RetroGetSystemInfo = unsafe extern "C" fn(info: *mut RetroSystemInfo);
@@ -119,10 +135,11 @@ pub fn run_libretro(
     audio_bus: Arc<AudioBus>,
     input_hub: Arc<InputHub>,
     shutdown: Arc<AtomicBool>,
+    control: Arc<RuntimeControl>,
 ) -> Result<()> {
     // SAFETY: Function pointers are loaded from a libretro core and invoked with the
     // signatures mandated by the libretro ABI.
-    unsafe { run_libretro_unsafe(config, frame_store, audio_bus, input_hub, shutdown) }
+    unsafe { run_libretro_unsafe(config, frame_store, audio_bus, input_hub, shutdown, control) }
 }
 
 unsafe fn run_libretro_unsafe(
@@ -131,6 +148,7 @@ unsafe fn run_libretro_unsafe(
     audio_bus: Arc<AudioBus>,
     input_hub: Arc<InputHub>,
     shutdown: Arc<AtomicBool>,
+    control: Arc<RuntimeControl>,
 ) -> Result<()> {
     let library = unsafe { Library::new(&config.core_path) }
         .with_context(|| format!("failed to load core library {}", config.core_path.display()))?;
@@ -151,6 +169,7 @@ unsafe fn run_libretro_unsafe(
     let retro_init = unsafe { load_symbol::<RetroInit>(&library, b"retro_init\0") }?;
     let retro_deinit = unsafe { load_symbol::<RetroDeinit>(&library, b"retro_deinit\0") }?;
     let retro_run = unsafe { load_symbol::<RetroRun>(&library, b"retro_run\0") }?;
+    let retro_reset = unsafe { load_optional_symbol::<RetroReset>(&library, b"retro_reset\0") };
     let retro_load_game = unsafe { load_symbol::<RetroLoadGame>(&library, b"retro_load_game\0") }?;
     let retro_unload_game =
         unsafe { load_symbol::<RetroUnloadGame>(&library, b"retro_unload_game\0") }?;
@@ -308,6 +327,13 @@ unsafe fn run_libretro_unsafe(
     let mut next_frame = Instant::now();
 
     while !shutdown.load(Ordering::Relaxed) {
+        if control.take_reset_requested() {
+            if let Some(retro_reset) = retro_reset {
+                unsafe { retro_reset() };
+            } else {
+                eprintln!("reset requested, but core does not expose retro_reset");
+            }
+        }
         unsafe { retro_run() };
 
         next_frame += frame_interval;

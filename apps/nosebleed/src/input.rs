@@ -189,6 +189,21 @@ impl InputHub {
         entry.updated_at = Instant::now();
     }
 
+    pub fn pulse_button(&self, port: u32, source: &str, button: Button) {
+        if port >= MAX_PORTS {
+            return;
+        }
+
+        let mut guard = self
+            .state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let source_map = guard.per_port.entry(port).or_default();
+        let entry = source_map.entry(source.to_owned()).or_default();
+        entry.buttons[button.retro_id() as usize] = true;
+        entry.updated_at = Instant::now();
+    }
+
     pub fn remove_source(&self, source: &str) {
         let mut guard = self
             .state
