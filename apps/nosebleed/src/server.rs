@@ -33,7 +33,8 @@ use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
 use crate::input::{Button, InputHub};
 use crate::protocol::{
-    ClientCommand, ClientMessage, ServerMessage, now_unix_ms, parse_client_message, serialize_server_message,
+    ClientCommand, ClientMessage, ServerMessage, now_unix_ms, parse_client_message,
+    serialize_server_message,
 };
 use crate::session::{
     SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus,
@@ -1464,7 +1465,9 @@ fn process_input_payload(
 
             match command {
                 ClientCommand::InsertCoin => {
-                    state.input_hub.pulse_button(port, source_id, Button::Select);
+                    state
+                        .input_hub
+                        .pulse_button(port, source_id, Button::Select);
                     ServerMessage::Ack {
                         sequence,
                         server_time_ms: now_unix_ms(),

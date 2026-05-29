@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 const STALE_TIMEOUT: Duration = Duration::from_millis(300);
+const TRANSIENT_PULSE_DURATION: Duration = Duration::from_millis(100);
 
 pub const MAX_PORTS: u32 = 8;
 pub const JOYPAD_BUTTON_COUNT: usize = 16;
@@ -149,6 +150,20 @@ impl Default for MergedState {
 #[derive(Debug, Default)]
 struct InputState {
     per_port: HashMap<u32, HashMap<String, SourceState>>,
+    transient_buttons: HashMap<u32, TransientPortState>,
+}
+
+#[derive(Debug, Clone)]
+struct TransientPortState {
+    buttons: [Option<Instant>; JOYPAD_BUTTON_COUNT],
+}
+
+impl Default for TransientPortState {
+    fn default() -> Self {
+        Self {
+            buttons: [None; JOYPAD_BUTTON_COUNT],
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -200,8 +215,11 @@ impl InputHub {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let source_map = guard.per_port.entry(port).or_default();
         let entry = source_map.entry(source.to_owned()).or_default();
-        entry.buttons[button.retro_id() as usize] = true;
         entry.updated_at = Instant::now();
+
+        let transient = guard.transient_buttons.entry(port).or_default();
+        transient.buttons[button.retro_id() as usize] =
+            Some(Instant::now() + TRANSIENT_PULSE_DURATION);
     }
 
     pub fn remove_source(&self, source: &str) {
@@ -279,6 +297,14 @@ impl InputHub {
             merged.r2 = dominant_axis(merged.r2, state.r2);
         }
 
+        if let Some(transient) = guard.transient_buttons.get(&port) {
+            for (idx, deadline) in transient.buttons.iter().enumerate() {
+                if deadline.is_some_and(|deadline| deadline > now) {
+                    merged.buttons[idx] = true;
+                }
+            }
+        }
+
         // Expose analog trigger activity as digital shoulder presses.
         if merged.l2 > i16::MAX / 4 {
             merged.buttons[Button::L2.retro_id() as usize] = true;
@@ -305,5 +331,39 @@ fn clamp_axis(value: f32) -> i16 {
         (clamped * i16::MAX as f32).round() as i16
     } else {
         (clamped * -(i16::MIN as f32)).round() as i16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pulse_button_survives_followup_input_update_from_same_source() {
+        let hub = InputHub::default();
+        let port = 0;
+        let source = "player-1";
+
+        let mut released = InputUpdate::default();
+        released.buttons.insert(Button::Select, false);
+
+        hub.apply_update(port, source, &released);
+        hub.pulse_button(port, source, Button::Select);
+        hub.apply_update(port, source, &released);
+
+        assert_eq!(hub.joypad_button_state(port, Button::Select.retro_id()), 1);
+    }
+
+    #[test]
+    fn pulse_button_expires_after_short_duration() {
+        let hub = InputHub::default();
+        let port = 0;
+
+        hub.pulse_button(port, "player-1", Button::Select);
+        assert_eq!(hub.joypad_button_state(port, Button::Select.retro_id()), 1);
+
+        std::thread::sleep(TRANSIENT_PULSE_DURATION + Duration::from_millis(30));
+
+        assert_eq!(hub.joypad_button_state(port, Button::Select.retro_id()), 0);
     }
 }
