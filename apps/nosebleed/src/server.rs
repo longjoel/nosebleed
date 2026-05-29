@@ -31,9 +31,10 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
-use crate::input::InputHub;
+use crate::input::{Button, InputHub};
 use crate::protocol::{
-    ClientMessage, ServerMessage, now_unix_ms, parse_client_message, serialize_server_message,
+    ClientCommand, ClientMessage, ServerMessage, now_unix_ms, parse_client_message,
+    serialize_server_message,
 };
 use crate::session::{
     SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus,
@@ -1443,6 +1444,44 @@ fn process_input_payload(
             ServerMessage::Ack {
                 sequence,
                 server_time_ms: now_unix_ms(),
+            }
+        }
+        ClientMessage::Command {
+            command,
+            port,
+            sequence,
+        } => {
+            if !allow_input {
+                return ServerMessage::Error {
+                    message: "commands require player role".to_string(),
+                };
+            }
+
+            if !owned_ports.is_empty() && !owned_ports.contains(&port) {
+                return ServerMessage::Error {
+                    message: format!("port {port} not assigned to this player"),
+                };
+            }
+
+            match command {
+                ClientCommand::InsertCoin => {
+                    state
+                        .input_hub
+                        .pulse_button(port, source_id, Button::Select);
+                    ServerMessage::Ack {
+                        sequence,
+                        server_time_ms: now_unix_ms(),
+                    }
+                }
+                ClientCommand::Reset => match state.session_manager.request_reset() {
+                    Ok(()) => ServerMessage::Ack {
+                        sequence,
+                        server_time_ms: now_unix_ms(),
+                    },
+                    Err(err) => ServerMessage::Error {
+                        message: format!("reset failed: {err:#}"),
+                    },
+                },
             }
         }
         ClientMessage::Ping { client_time_ms } => {

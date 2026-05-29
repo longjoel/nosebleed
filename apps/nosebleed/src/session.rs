@@ -12,7 +12,7 @@ use crate::audio::AudioBus;
 use crate::core::{MockCoreConfig, spawn_mock_core};
 use crate::frame::LatestFrameStore;
 use crate::input::InputHub;
-use crate::libretro::{self, LibretroRunConfig};
+use crate::libretro::{self, LibretroRunConfig, RuntimeControl};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct WorkspaceConfig {
@@ -73,6 +73,7 @@ struct ActiveRuntime {
     session_dir: Option<PathBuf>,
     started_at_unix_ms: u64,
     shutdown: Arc<AtomicBool>,
+    control: Arc<RuntimeControl>,
     handle: JoinHandle<Result<()>>,
 }
 
@@ -122,12 +123,14 @@ impl SessionManager {
 
         let session_dir = prepare_session_workspace(&mut launch)?;
         let shutdown = Arc::new(AtomicBool::new(false));
+        let control = Arc::new(RuntimeControl::default());
         let handle = spawn_runtime(
             &launch,
             self.frame_store.clone(),
             self.audio_bus.clone(),
             self.input_hub.clone(),
             shutdown.clone(),
+            control.clone(),
         );
 
         let started_at_unix_ms = now_unix_ms();
@@ -140,6 +143,7 @@ impl SessionManager {
             session_dir,
             started_at_unix_ms,
             shutdown,
+            control,
             handle,
         });
         state.last_exit = None;
@@ -190,6 +194,20 @@ impl SessionManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         snapshot_locked(&state)
+    }
+
+    pub fn request_reset(&self) -> Result<()> {
+        self.reap_finished_runtime();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let runtime = state
+            .active
+            .as_ref()
+            .ok_or_else(|| anyhow!("no active runtime to reset"))?;
+        runtime.control.request_reset();
+        Ok(())
     }
 
     pub fn shutdown_and_join(&self) -> Result<()> {
@@ -244,6 +262,7 @@ fn spawn_runtime(
     audio_bus: Arc<AudioBus>,
     input_hub: Arc<InputHub>,
     shutdown: Arc<AtomicBool>,
+    control: Arc<RuntimeControl>,
 ) -> JoinHandle<Result<()>> {
     if let Some(core_path) = &launch.core {
         let config = LibretroRunConfig {
@@ -253,7 +272,7 @@ fn spawn_runtime(
         };
 
         std::thread::spawn(move || {
-            libretro::run_libretro(config, frame_store, audio_bus, input_hub, shutdown)
+            libretro::run_libretro(config, frame_store, audio_bus, input_hub, shutdown, control)
         })
     } else {
         if launch.content.is_some() {
