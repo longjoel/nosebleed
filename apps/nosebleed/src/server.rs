@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use image::ColorType;
+use image::codecs::jpeg::JpegEncoder;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
@@ -48,6 +50,8 @@ const FRAME_MAGIC: &[u8; 4] = b"NBF0";
 const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
 const VP8_VIDEO_MAGIC: &[u8; 4] = b"NBV1";
 const VP8_VIDEO_HEADER_LEN: usize = 4 + 8 + 4 + 1 + 4;
+const JPEG_VIDEO_MAGIC: &[u8; 4] = b"NBJ0";
+const JPEG_VIDEO_HEADER_LEN: usize = 4 + 4 + 4 + 4;
 const IVF_FILE_HEADER_LEN: usize = 32;
 const IVF_FRAME_HEADER_LEN: usize = 12;
 const DEFAULT_VP8_FRAME_DURATION_US: u32 = 16_666;
@@ -56,6 +60,12 @@ const DEFAULT_VP8_FRAME_DURATION_US: u32 = 16_666;
 enum VideoChannelMode {
     Raw,
     Vp8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WsVideoMode {
+    Raw,
+    Jpeg,
 }
 
 #[derive(Debug)]
@@ -109,6 +119,7 @@ impl ServerState {
 #[derive(Debug, Deserialize, Default)]
 struct WsQuery {
     token: Option<String>,
+    video_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,7 +374,12 @@ async fn video_ws(
     }
 
     let rx = state.video_rx.clone();
-    ws.on_upgrade(move |socket| video_session(socket, rx))
+    let mode = if query.video_mode.as_deref() == Some("jpeg") {
+        WsVideoMode::Jpeg
+    } else {
+        WsVideoMode::Raw
+    };
+    ws.on_upgrade(move |socket| video_session(socket, rx, mode))
         .into_response()
 }
 
@@ -1135,6 +1151,73 @@ fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
     })
 }
 
+fn encode_jpeg_video_packet(raw: &RawFramePacket, quality: u8) -> Option<Vec<u8>> {
+    let width = raw.width as usize;
+    let height = raw.height as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let row_bytes = raw.pitch;
+    let mut rgb = vec![0u8; width.checked_mul(height)?.checked_mul(3)?];
+
+    for y in 0..height {
+        for x in 0..width {
+            let di = (y * width + x) * 3;
+            match raw.pixel_format {
+                0 => {
+                    let si = y * row_bytes + x * 4;
+                    let b = *raw.payload.get(si)?;
+                    let g = *raw.payload.get(si + 1)?;
+                    let r = *raw.payload.get(si + 2)?;
+                    rgb[di] = r;
+                    rgb[di + 1] = g;
+                    rgb[di + 2] = b;
+                }
+                1 => {
+                    let si = y * row_bytes + x * 2;
+                    let lo = *raw.payload.get(si)? as u16;
+                    let hi = *raw.payload.get(si + 1)? as u16;
+                    let v = lo | (hi << 8);
+                    let r = ((v >> 11) & 0x1f) as u8;
+                    let g = ((v >> 5) & 0x3f) as u8;
+                    let b = (v & 0x1f) as u8;
+                    rgb[di] = (r << 3) | (r >> 2);
+                    rgb[di + 1] = (g << 2) | (g >> 4);
+                    rgb[di + 2] = (b << 3) | (b >> 2);
+                }
+                2 => {
+                    let si = y * row_bytes + x * 2;
+                    let lo = *raw.payload.get(si)? as u16;
+                    let hi = *raw.payload.get(si + 1)? as u16;
+                    let v = lo | (hi << 8);
+                    let r = ((v >> 10) & 0x1f) as u8;
+                    let g = ((v >> 5) & 0x1f) as u8;
+                    let b = (v & 0x1f) as u8;
+                    rgb[di] = (r << 3) | (r >> 2);
+                    rgb[di + 1] = (g << 3) | (g >> 2);
+                    rgb[di + 2] = (b << 3) | (b >> 2);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    let mut jpeg_bytes = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
+    encoder
+        .encode(&rgb, raw.width, raw.height, ColorType::Rgb8.into())
+        .ok()?;
+
+    let payload_len = jpeg_bytes.len() as u32;
+    let mut out = Vec::with_capacity(JPEG_VIDEO_HEADER_LEN + jpeg_bytes.len());
+    out.extend_from_slice(JPEG_VIDEO_MAGIC);
+    out.extend_from_slice(&raw.width.to_le_bytes());
+    out.extend_from_slice(&raw.height.to_le_bytes());
+    out.extend_from_slice(&payload_len.to_le_bytes());
+    out.extend_from_slice(&jpeg_bytes);
+    Some(out)
+}
+
 fn encode_vp8_video_packet(frame: &EncodedVp8Frame) -> Vec<u8> {
     let payload_len = frame.payload.len() as u32;
     let mut out = Vec::with_capacity(VP8_VIDEO_HEADER_LEN + frame.payload.len());
@@ -1240,7 +1323,11 @@ fn cleanup_input_source(state: &ServerState, source_id: &str) {
     registry.mark_disconnected(source_id, state.auth.reconnect_window);
 }
 
-async fn video_session(mut socket: WebSocket, mut video_rx: watch::Receiver<Option<Arc<[u8]>>>) {
+async fn video_session(
+    mut socket: WebSocket,
+    mut video_rx: watch::Receiver<Option<Arc<[u8]>>>,
+    mode: WsVideoMode,
+) {
     loop {
         tokio::select! {
             changed = video_rx.changed() => {
@@ -1253,8 +1340,21 @@ async fn video_session(mut socket: WebSocket, mut video_rx: watch::Receiver<Opti
                     continue;
                 };
 
+                let outgoing = match mode {
+                    WsVideoMode::Raw => Bytes::copy_from_slice(packet.as_ref()),
+                    WsVideoMode::Jpeg => {
+                        let Some(raw) = decode_raw_frame_packet(packet.as_ref()) else {
+                            continue;
+                        };
+                        let Some(jpeg) = encode_jpeg_video_packet(&raw, 70) else {
+                            continue;
+                        };
+                        Bytes::from(jpeg)
+                    }
+                };
+
                 if socket
-                    .send(Message::Binary(Bytes::copy_from_slice(packet.as_ref())))
+                    .send(Message::Binary(outgoing))
                     .await
                     .is_err()
                 {
