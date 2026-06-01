@@ -1201,6 +1201,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "bytes",
  "clap",
  "hmac",
  "image",
@@ -1210,6 +1211,7 @@ dependencies = [
  "sha2",
  "tokio",
  "webrtc",
+ "webrtc-media",
 ]
 
 [[package]]

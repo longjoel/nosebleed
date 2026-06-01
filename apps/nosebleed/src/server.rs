@@ -5,23 +5,27 @@ use std::net::SocketAddr;
 use std::str;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+
+use bytes::Bytes as MediaBytes;
+use media::Sample;
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use image::ColorType;
-use image::codecs::jpeg::JpegEncoder;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, body::Bytes};
+use image::ColorType;
+use image::codecs::jpeg::JpegEncoder;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, watch};
 use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::{MIME_TYPE_PCMU, MIME_TYPE_VP8};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -30,6 +34,9 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
@@ -55,17 +62,22 @@ const JPEG_VIDEO_HEADER_LEN: usize = 4 + 4 + 4 + 4;
 const IVF_FILE_HEADER_LEN: usize = 32;
 const IVF_FRAME_HEADER_LEN: usize = 12;
 const DEFAULT_VP8_FRAME_DURATION_US: u32 = 16_666;
+const PCMU_SAMPLE_RATE: u32 = 8_000;
+const PCMU_FRAME_SAMPLES: usize = 160;
+const AUDIO_PACKET_MAGIC: &[u8; 4] = b"NBA0";
+const AUDIO_PACKET_HEADER_LEN: usize = 34;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VideoChannelMode {
     Raw,
-    Vp8,
+    Vp8DataChannel,
+    Vp8Track,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WsVideoMode {
     Raw,
-    Jpeg,
+    Jpeg { quality: u8 },
 }
 
 #[derive(Debug)]
@@ -78,6 +90,9 @@ pub struct AuthConfig {
 #[derive(Clone)]
 pub struct ServerState {
     pub video_rx: watch::Receiver<Option<Arc<[u8]>>>,
+    pub webrtc_vp8_rx: watch::Receiver<Option<Arc<[u8]>>>,
+    pub webrtc_vp8_track: Arc<TrackLocalStaticSample>,
+    pub webrtc_pcmu_track: Arc<TrackLocalStaticSample>,
     pub audio_tx: broadcast::Sender<Arc<[u8]>>,
     pub input_hub: Arc<InputHub>,
     pub shutdown: Arc<AtomicBool>,
@@ -100,8 +115,33 @@ impl ServerState {
         auth: Arc<AuthConfig>,
         session_manager: Arc<SessionManager>,
     ) -> Self {
+        let webrtc_vp8_track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_VP8.to_owned(),
+                clock_rate: 90_000,
+                ..Default::default()
+            },
+            "video".to_owned(),
+            "nosebleed".to_owned(),
+        ));
+        let webrtc_vp8_rx =
+            spawn_shared_webrtc_vp8_channel(video_rx.clone(), webrtc_vp8_track.clone());
+        let webrtc_pcmu_track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_PCMU.to_owned(),
+                clock_rate: PCMU_SAMPLE_RATE,
+                channels: 1,
+                ..Default::default()
+            },
+            "audio".to_owned(),
+            "nosebleed".to_owned(),
+        ));
+        spawn_shared_webrtc_pcmu_track(audio_tx.subscribe(), webrtc_pcmu_track.clone());
         Self {
             video_rx,
+            webrtc_vp8_rx,
+            webrtc_vp8_track,
+            webrtc_pcmu_track,
             audio_tx,
             input_hub,
             shutdown,
@@ -120,6 +160,7 @@ impl ServerState {
 struct WsQuery {
     token: Option<String>,
     video_mode: Option<String>,
+    jpeg_quality: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -374,10 +415,12 @@ async fn video_ws(
     }
 
     let rx = state.video_rx.clone();
-    let mode = if query.video_mode.as_deref() == Some("jpeg") {
-        WsVideoMode::Jpeg
-    } else {
+    let mode = if query.video_mode.as_deref() == Some("raw") {
         WsVideoMode::Raw
+    } else {
+        WsVideoMode::Jpeg {
+            quality: sanitize_jpeg_quality(query.jpeg_quality.unwrap_or(70))
+        }
     };
     ws.on_upgrade(move |socket| video_session(socket, rx, mode))
         .into_response()
@@ -431,10 +474,10 @@ async fn webrtc_session(
         Ok(claims) => claims,
         Err(response) => return response,
     };
-    let requested_video_mode = if offer.video_mode.as_deref() == Some("vp8") {
-        VideoChannelMode::Vp8
-    } else {
-        VideoChannelMode::Raw
+    let requested_video_mode = match offer.video_mode.as_deref() {
+        Some("track-vp8") => VideoChannelMode::Vp8Track,
+        Some("vp8") => VideoChannelMode::Vp8DataChannel,
+        _ => VideoChannelMode::Raw,
     };
 
     let input_allowed = claims
@@ -485,6 +528,42 @@ async fn webrtc_session(
                 .into_response();
         }
     };
+
+    if requested_video_mode == VideoChannelMode::Vp8Track {
+        let video_track = state.webrtc_vp8_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+        let video_sender = match peer_connection.add_track(video_track).await {
+            Ok(sender) => sender,
+            Err(err) => {
+                cleanup_input_source(&state, &source_id);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to attach webrtc video track: {err:#}"),
+                )
+                    .into_response();
+            }
+        };
+
+        tokio::spawn(async move {
+            while video_sender.read_rtcp().await.is_ok() {}
+        });
+
+        let audio_track = state.webrtc_pcmu_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+        let audio_sender = match peer_connection.add_track(audio_track).await {
+            Ok(sender) => sender,
+            Err(err) => {
+                cleanup_input_source(&state, &source_id);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to attach webrtc audio track: {err:#}"),
+                )
+                    .into_response();
+            }
+        };
+
+        tokio::spawn(async move {
+            while audio_sender.read_rtcp().await.is_ok() {}
+        });
+    }
 
     let cleanup_once = Arc::new(AtomicBool::new(false));
     let rtc_session_id = client_id;
@@ -541,20 +620,22 @@ async fn webrtc_session(
             Box::pin(async move {
                 let label = channel.label();
                 if label == "video" {
-                    let video_rx = state_for_channels.video_rx.clone();
+                    if video_mode_for_channels == VideoChannelMode::Vp8Track {
+                        return;
+                    }
+
+                    let video_rx = match video_mode_for_channels {
+                        VideoChannelMode::Raw => state_for_channels.video_rx.clone(),
+                        VideoChannelMode::Vp8DataChannel => state_for_channels.webrtc_vp8_rx.clone(),
+                        VideoChannelMode::Vp8Track => unreachable!(),
+                    };
                     let channel_for_video = channel.clone();
                     channel.on_open(Box::new(move || {
                         let channel_for_video = channel_for_video.clone();
                         let video_rx = video_rx.clone();
-                        let video_mode_for_channels = video_mode_for_channels;
                         Box::pin(async move {
                             tokio::spawn(async move {
-                                rtc_video_channel_session(
-                                    channel_for_video,
-                                    video_rx,
-                                    video_mode_for_channels,
-                                )
-                                .await;
+                                rtc_video_channel_session(channel_for_video, video_rx).await;
                             });
                         })
                     }));
@@ -754,21 +835,6 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
 
 async fn rtc_video_channel_session(
     channel: Arc<RTCDataChannel>,
-    video_rx: watch::Receiver<Option<Arc<[u8]>>>,
-    mode: VideoChannelMode,
-) {
-    match mode {
-        VideoChannelMode::Raw => {
-            rtc_video_channel_session_raw(channel, video_rx).await;
-        }
-        VideoChannelMode::Vp8 => {
-            rtc_video_channel_session_vp8(channel, video_rx).await;
-        }
-    }
-}
-
-async fn rtc_video_channel_session_raw(
-    channel: Arc<RTCDataChannel>,
     mut video_rx: watch::Receiver<Option<Arc<[u8]>>>,
 ) {
     let mut next_message_id = 1u32;
@@ -787,28 +853,40 @@ async fn rtc_video_channel_session_raw(
     }
 }
 
-async fn rtc_video_channel_session_vp8(
-    channel: Arc<RTCDataChannel>,
-    mut video_rx: watch::Receiver<Option<Arc<[u8]>>>,
+fn spawn_shared_webrtc_vp8_channel(
+    raw_video_rx: watch::Receiver<Option<Arc<[u8]>>>,
+    track: Arc<TrackLocalStaticSample>,
+) -> watch::Receiver<Option<Arc<[u8]>>> {
+    let (tx, rx) = watch::channel(None::<Arc<[u8]>>);
+    tokio::spawn(async move {
+        shared_webrtc_vp8_encoder(raw_video_rx, tx, track).await;
+    });
+    rx
+}
+
+async fn shared_webrtc_vp8_encoder(
+    mut raw_video_rx: watch::Receiver<Option<Arc<[u8]>>>,
+    encoded_tx: watch::Sender<Option<Arc<[u8]>>>,
+    track: Arc<TrackLocalStaticSample>,
 ) {
-    let mut next_message_id = 1u32;
     let mut encoder: Option<Vp8IvfEncoder> = None;
     let mut flush_interval = tokio::time::interval(Duration::from_millis(5));
     flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
-            changed = video_rx.changed() => {
+            changed = raw_video_rx.changed() => {
                 if changed.is_err() {
                     break;
                 }
 
-                let packet = video_rx.borrow().clone();
+                let packet = raw_video_rx.borrow().clone();
                 let Some(packet) = packet else {
                     continue;
                 };
 
                 let Some(raw) = decode_raw_frame_packet(packet.as_ref()) else {
+                    let _ = encoded_tx.send_replace(Some(packet));
                     continue;
                 };
 
@@ -820,34 +898,16 @@ async fn rtc_video_channel_session_vp8(
                 }
 
                 if let Some(current_encoder) = encoder.as_mut() {
-                    let mut send_failed = false;
-                    match prepare_ffmpeg_raw_frame(&raw) {
-                        Some(payload) => {
-                            if current_encoder.send_frame(payload.as_ref()).await.is_err() {
-                                send_failed = true;
-                            }
-                        }
-                        None => {
-                            send_failed = true;
-                        }
-                    }
+                    let send_failed = match prepare_ffmpeg_raw_frame(&raw) {
+                        Some(payload) => current_encoder.send_frame(payload.as_ref()).await.is_err(),
+                        None => true,
+                    };
                     if send_failed {
                         encoder = None;
-                        if send_packet_over_data_channel(&channel, &packet, &mut next_message_id)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        let _ = encoded_tx.send_replace(Some(packet));
                     }
                 } else {
-                    // If VP8 encoding is unavailable, fall back to raw packets.
-                    if send_packet_over_data_channel(&channel, &packet, &mut next_message_id)
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    let _ = encoded_tx.send_replace(Some(packet));
                 }
             }
             _ = flush_interval.tick() => {}
@@ -867,17 +927,167 @@ async fn rtc_video_channel_session_vp8(
                 let Some(frame) = next_frame else {
                     break;
                 };
-                let packet = encode_vp8_video_packet(&frame);
-                if send_packet_over_data_channel(&channel, packet.as_slice(), &mut next_message_id)
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
+                let packet: Arc<[u8]> = Arc::from(encode_vp8_video_packet(&frame));
+                let _ = encoded_tx.send_replace(Some(packet));
+                let _ = track
+                    .write_sample(&Sample {
+                        data: MediaBytes::from(frame.payload.clone()),
+                        timestamp: SystemTime::now(),
+                        duration: Duration::from_micros(u64::from(frame.duration_us)),
+                        packet_timestamp: (frame.pts_us.saturating_mul(90) / 1_000) as u32,
+                        ..Default::default()
+                    })
+                    .await;
             }
             if encoder_failed {
                 encoder = None;
             }
+        }
+    }
+}
+
+fn spawn_shared_webrtc_pcmu_track(
+    audio_rx: broadcast::Receiver<Arc<[u8]>>,
+    track: Arc<TrackLocalStaticSample>,
+) {
+    tokio::spawn(async move {
+        shared_webrtc_pcmu_encoder(audio_rx, track).await;
+    });
+}
+
+#[derive(Debug)]
+struct DecodedAudioPacket {
+    sample_rate: u32,
+    channels: u8,
+    frame_count: usize,
+    payload_offset: usize,
+}
+
+fn decode_audio_packet(packet: &[u8]) -> Option<DecodedAudioPacket> {
+    if packet.len() < AUDIO_PACKET_HEADER_LEN || &packet[..4] != AUDIO_PACKET_MAGIC {
+        return None;
+    }
+
+    let sample_rate = u32::from_le_bytes(packet[20..24].try_into().ok()?);
+    let channels = packet[24];
+    let sample_format = packet[25];
+    let frame_count = u32::from_le_bytes(packet[26..30].try_into().ok()?) as usize;
+    let payload_len = u32::from_le_bytes(packet[30..34].try_into().ok()?) as usize;
+    if sample_format != 0 || !(1..=2).contains(&channels) || sample_rate < 8_000 {
+        return None;
+    }
+
+    let bytes_per_frame = channels as usize * 2;
+    if payload_len < frame_count.checked_mul(bytes_per_frame)? {
+        return None;
+    }
+    if packet.len() < AUDIO_PACKET_HEADER_LEN + payload_len {
+        return None;
+    }
+
+    Some(DecodedAudioPacket {
+        sample_rate,
+        channels,
+        frame_count,
+        payload_offset: AUDIO_PACKET_HEADER_LEN,
+    })
+}
+
+fn linear_to_mulaw(sample: i16) -> u8 {
+    const MULAW_BIAS: i32 = 0x84;
+    const MULAW_CLIP: i32 = 32_635;
+
+    let mut pcm = sample as i32;
+    let mask = if pcm < 0 {
+        pcm = -pcm;
+        0x7f
+    } else {
+        0xff
+    };
+    pcm = (pcm.min(MULAW_CLIP)) + MULAW_BIAS;
+
+    let mut segment = 0u8;
+    let mut value = pcm >> 7;
+    while value > 1 {
+        segment = segment.saturating_add(1);
+        value >>= 1;
+    }
+    let mantissa = ((pcm >> (segment as i32 + 3)) & 0x0f) as u8;
+    !(mask & ((segment << 4) | mantissa))
+}
+
+async fn shared_webrtc_pcmu_encoder(
+    mut audio_rx: broadcast::Receiver<Arc<[u8]>>,
+    track: Arc<TrackLocalStaticSample>,
+) {
+    let mut source_rate = 48_000u32;
+    let mut phase = 0.0f64;
+    let mut pending_mono = Vec::<i16>::new();
+    let mut pending_pcmu = Vec::<u8>::new();
+    let mut next_packet_timestamp = 0u32;
+
+    loop {
+        let packet = match audio_rx.recv().await {
+            Ok(packet) => packet,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
+
+        let Some(decoded) = decode_audio_packet(packet.as_ref()) else {
+            continue;
+        };
+
+        if decoded.sample_rate != source_rate {
+            source_rate = decoded.sample_rate;
+            phase = 0.0;
+            pending_mono.clear();
+            pending_pcmu.clear();
+            next_packet_timestamp = 0;
+        }
+
+        let bytes_per_frame = decoded.channels as usize * 2;
+        for frame_index in 0..decoded.frame_count {
+            let sample_offset = decoded.payload_offset + frame_index * bytes_per_frame;
+            let left = i16::from_le_bytes(packet[sample_offset..sample_offset + 2].try_into().unwrap());
+            let mono = if decoded.channels == 1 {
+                left
+            } else {
+                let right = i16::from_le_bytes(packet[sample_offset + 2..sample_offset + 4].try_into().unwrap());
+                ((left as i32 + right as i32) / 2) as i16
+            };
+            pending_mono.push(mono);
+        }
+
+        let step = source_rate as f64 / PCMU_SAMPLE_RATE as f64;
+        while phase + 1.0 < pending_mono.len() as f64 {
+            let base_index = phase.floor() as usize;
+            let next_index = (base_index + 1).min(pending_mono.len() - 1);
+            let frac = phase - base_index as f64;
+            let current = pending_mono[base_index] as f64;
+            let next = pending_mono[next_index] as f64;
+            let interpolated = current + (next - current) * frac;
+            pending_pcmu.push(linear_to_mulaw(interpolated.round() as i16));
+            phase += step;
+
+            if pending_pcmu.len() >= PCMU_FRAME_SAMPLES {
+                let frame = pending_pcmu.drain(..PCMU_FRAME_SAMPLES).collect::<Vec<_>>();
+                let _ = track
+                    .write_sample(&Sample {
+                        data: MediaBytes::from(frame),
+                        duration: Duration::from_millis(20),
+                        packet_timestamp: next_packet_timestamp,
+                        timestamp: SystemTime::now(),
+                        ..Default::default()
+                    })
+                    .await;
+                next_packet_timestamp = next_packet_timestamp.wrapping_add(PCMU_FRAME_SAMPLES as u32);
+            }
+        }
+
+        let consumed = phase.floor() as usize;
+        if consumed > 0 {
+            pending_mono.drain(..consumed);
+            phase -= consumed as f64;
         }
     }
 }
@@ -1151,6 +1361,10 @@ fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
     })
 }
 
+fn sanitize_jpeg_quality(quality: u8) -> u8 {
+    quality.clamp(25, 95)
+}
+
 fn encode_jpeg_video_packet(raw: &RawFramePacket, quality: u8) -> Option<Vec<u8>> {
     let width = raw.width as usize;
     let height = raw.height as usize;
@@ -1342,11 +1556,11 @@ async fn video_session(
 
                 let outgoing = match mode {
                     WsVideoMode::Raw => Bytes::copy_from_slice(packet.as_ref()),
-                    WsVideoMode::Jpeg => {
+                    WsVideoMode::Jpeg { quality } => {
                         let Some(raw) = decode_raw_frame_packet(packet.as_ref()) else {
                             continue;
                         };
-                        let Some(jpeg) = encode_jpeg_video_packet(&raw, 70) else {
+                        let Some(jpeg) = encode_jpeg_video_packet(&raw, quality) else {
                             continue;
                         };
                         Bytes::from(jpeg)
