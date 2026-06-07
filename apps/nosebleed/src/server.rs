@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str;
@@ -12,9 +11,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router, body::Bytes};
-use image::ColorType;
-use image::codecs::jpeg::JpegEncoder;
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
@@ -43,17 +40,6 @@ use crate::protocol::{
 use crate::session::{
     SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus,
 };
-
-const FRAME_MAGIC: &[u8; 4] = b"NBF0";
-const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
-const JPEG_VIDEO_MAGIC: &[u8; 4] = b"NBJ0";
-const JPEG_VIDEO_HEADER_LEN: usize = 4 + 4 + 4 + 4;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WsVideoMode {
-    Raw,
-    Jpeg { quality: u8 },
-}
 
 #[derive(Debug)]
 pub struct AuthConfig {
@@ -152,8 +138,6 @@ impl ServerState {
 #[derive(Debug, Deserialize, Default)]
 struct WsQuery {
     token: Option<String>,
-    video_mode: Option<String>,
-    jpeg_quality: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,15 +181,6 @@ struct RoundEndRequest {
     right_score: u32,
 }
 
-#[derive(Debug, Clone)]
-struct RawFramePacket {
-    width: u32,
-    height: u32,
-    pitch: usize,
-    pixel_format: u8,
-    payload: Vec<u8>,
-}
-
 #[derive(Debug, Default)]
 struct InputSessionRegistry {
     per_port: HashMap<u32, PortOwner>,
@@ -242,8 +217,6 @@ pub async fn run(state: ServerState, listen_addr: SocketAddr) -> Result<()> {
             "/api/arcade/machines/{id}/round/end",
             post(arcade_round_end),
         )
-        .route("/ws/video", get(video_ws))
-        .route("/ws/audio", get(audio_ws))
         .route("/ws/input", get(input_ws))
         .route("/webrtc/session", post(webrtc_session))
         .with_state(state.clone());
@@ -389,41 +362,6 @@ async fn arcade_round_end(
 
 fn arcade_error_response(err: ArcadeError) -> Response {
     (err.status_code(), err.message().to_string()).into_response()
-}
-
-async fn video_ws(
-    ws: WebSocketUpgrade,
-    Query(query): Query<WsQuery>,
-    State(state): State<ServerState>,
-) -> Response {
-    if let Err(response) = authorize_stream_claims(&state, query.token.as_deref()) {
-        return response;
-    }
-
-    let rx = state.video_rx.clone();
-    let mode = if query.video_mode.as_deref() == Some("raw") {
-        WsVideoMode::Raw
-    } else {
-        WsVideoMode::Jpeg {
-            quality: sanitize_jpeg_quality(query.jpeg_quality.unwrap_or(70)),
-        }
-    };
-    ws.on_upgrade(move |socket| video_session(socket, rx, mode))
-        .into_response()
-}
-
-async fn audio_ws(
-    ws: WebSocketUpgrade,
-    Query(query): Query<WsQuery>,
-    State(state): State<ServerState>,
-) -> Response {
-    if let Err(response) = authorize_stream_claims(&state, query.token.as_deref()) {
-        return response;
-    }
-
-    let rx = state.audio_tx.subscribe();
-    ws.on_upgrade(move |socket| audio_session(socket, rx))
-        .into_response()
 }
 
 async fn input_ws(
@@ -888,114 +826,6 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
 }
 
 
-fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
-    if packet.len() < FRAME_HEADER_LEN {
-        return None;
-    }
-
-    if &packet[0..4] != FRAME_MAGIC {
-        return None;
-    }
-
-    let width = le_u32(&packet[20..24]);
-    let height = le_u32(&packet[24..28]);
-    let pitch = le_u32(&packet[28..32]) as usize;
-    let pixel_format = packet[32];
-    let payload_len = le_u32(&packet[33..37]) as usize;
-    if FRAME_HEADER_LEN + payload_len > packet.len() {
-        return None;
-    }
-
-    let payload = packet[FRAME_HEADER_LEN..FRAME_HEADER_LEN + payload_len].to_vec();
-    let expected_len = pitch.checked_mul(height as usize)?;
-    if payload.len() < expected_len {
-        return None;
-    }
-
-    Some(RawFramePacket {
-        width,
-        height,
-        pitch,
-        pixel_format,
-        payload,
-    })
-}
-
-fn sanitize_jpeg_quality(quality: u8) -> u8 {
-    quality.clamp(25, 95)
-}
-
-fn encode_jpeg_video_packet(raw: &RawFramePacket, quality: u8) -> Option<Vec<u8>> {
-    let width = raw.width as usize;
-    let height = raw.height as usize;
-    if width == 0 || height == 0 {
-        return None;
-    }
-    let row_bytes = raw.pitch;
-    let mut rgb = vec![0u8; width.checked_mul(height)?.checked_mul(3)?];
-
-    for y in 0..height {
-        for x in 0..width {
-            let di = (y * width + x) * 3;
-            match raw.pixel_format {
-                0 => {
-                    let si = y * row_bytes + x * 4;
-                    let b = *raw.payload.get(si)?;
-                    let g = *raw.payload.get(si + 1)?;
-                    let r = *raw.payload.get(si + 2)?;
-                    rgb[di] = r;
-                    rgb[di + 1] = g;
-                    rgb[di + 2] = b;
-                }
-                1 => {
-                    let si = y * row_bytes + x * 2;
-                    let lo = *raw.payload.get(si)? as u16;
-                    let hi = *raw.payload.get(si + 1)? as u16;
-                    let v = lo | (hi << 8);
-                    let r = ((v >> 11) & 0x1f) as u8;
-                    let g = ((v >> 5) & 0x3f) as u8;
-                    let b = (v & 0x1f) as u8;
-                    rgb[di] = (r << 3) | (r >> 2);
-                    rgb[di + 1] = (g << 2) | (g >> 4);
-                    rgb[di + 2] = (b << 3) | (b >> 2);
-                }
-                2 => {
-                    let si = y * row_bytes + x * 2;
-                    let lo = *raw.payload.get(si)? as u16;
-                    let hi = *raw.payload.get(si + 1)? as u16;
-                    let v = lo | (hi << 8);
-                    let r = ((v >> 10) & 0x1f) as u8;
-                    let g = ((v >> 5) & 0x1f) as u8;
-                    let b = (v & 0x1f) as u8;
-                    rgb[di] = (r << 3) | (r >> 2);
-                    rgb[di + 1] = (g << 3) | (g >> 2);
-                    rgb[di + 2] = (b << 3) | (b >> 2);
-                }
-                _ => return None,
-            }
-        }
-    }
-
-    let mut jpeg_bytes = Vec::new();
-    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
-    encoder
-        .encode(&rgb, raw.width, raw.height, ColorType::Rgb8.into())
-        .ok()?;
-
-    let payload_len = jpeg_bytes.len() as u32;
-    let mut out = Vec::with_capacity(JPEG_VIDEO_HEADER_LEN + jpeg_bytes.len());
-    out.extend_from_slice(JPEG_VIDEO_MAGIC);
-    out.extend_from_slice(&raw.width.to_le_bytes());
-    out.extend_from_slice(&raw.height.to_le_bytes());
-    out.extend_from_slice(&payload_len.to_le_bytes());
-    out.extend_from_slice(&jpeg_bytes);
-    Some(out)
-}
-
-fn le_u32(raw: &[u8]) -> u32 {
-    u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
-}
-
 fn cleanup_input_source_once(state: &ServerState, source_id: &str, cleanup_once: &AtomicBool) {
     if cleanup_once.swap(true, Ordering::Relaxed) {
         return;
@@ -1010,94 +840,6 @@ fn cleanup_input_source(state: &ServerState, source_id: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     registry.mark_disconnected(source_id, state.auth.reconnect_window);
-}
-
-async fn video_session(
-    mut socket: WebSocket,
-    mut video_rx: watch::Receiver<Option<Arc<[u8]>>>,
-    mode: WsVideoMode,
-) {
-    loop {
-        tokio::select! {
-            changed = video_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-
-                let packet = video_rx.borrow().clone();
-                let Some(packet) = packet else {
-                    continue;
-                };
-
-                let outgoing = match mode {
-                    WsVideoMode::Raw => Bytes::copy_from_slice(packet.as_ref()),
-                    WsVideoMode::Jpeg { quality } => {
-                        let Some(raw) = decode_raw_frame_packet(packet.as_ref()) else {
-                            continue;
-                        };
-                        let Some(jpeg) = encode_jpeg_video_packet(&raw, quality) else {
-                            continue;
-                        };
-                        Bytes::from(jpeg)
-                    }
-                };
-
-                if socket
-                    .send(Message::Binary(outgoing))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            incoming = socket.recv() => {
-                match incoming {
-                    Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(_)) => break,
-                }
-            }
-        }
-    }
-}
-
-async fn audio_session(mut socket: WebSocket, mut audio_rx: broadcast::Receiver<Arc<[u8]>>) {
-    loop {
-        tokio::select! {
-            received = audio_rx.recv() => {
-                let packet = match received {
-                    Ok(packet) => packet,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-
-                if socket
-                    .send(Message::Binary(Bytes::copy_from_slice(packet.as_ref())))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            incoming = socket.recv() => {
-                match incoming {
-                    Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(_)) => break,
-                }
-            }
-        }
-    }
 }
 
 async fn input_session(
