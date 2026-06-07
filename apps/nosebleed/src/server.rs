@@ -45,8 +45,8 @@ use crate::gstreamer_backend::SharedGstreamerMedia;
 use crate::input::{Button, InputHub};
 use crate::media::{MediaBackend, MediaCapabilities, MediaConfig, WebRtcTransportMode};
 use crate::protocol::{
-    ClientCommand, ClientMessage, ServerMessage, now_unix_ms, parse_client_message,
-    serialize_server_message,
+    ClientCommand, ClientMessage, ServerMessage, decode_input_binary, now_unix_ms,
+    parse_client_message, serialize_server_message,
 };
 use crate::session::{
     SessionManager, StartRequest as SessionStartRequest, Status as SessionStatus,
@@ -764,6 +764,23 @@ async fn webrtc_session(
                         let owned_ports_for_input = owned_ports_for_input.clone();
                         let channel_for_input = channel_for_input.clone();
                         Box::pin(async move {
+                            // Binary frames → binary input protocol (fast path)
+                            if message.data.len() == crate::input::INPUT_BINARY_SIZE {
+                                if let Some(bin) =
+                                    crate::input::InputBinary::from_bytes(message.data.as_ref())
+                                {
+                                    if input_allowed
+                                        && (owned_ports_for_input.is_empty()
+                                            || owned_ports_for_input.contains(&bin.port))
+                                    {
+                                        let update = bin.to_input_update();
+                                        state_for_input
+                                            .input_hub
+                                            .apply_update(bin.port, &source_for_input, &update);
+                                    }
+                                }
+                                return;
+                            }
                             let raw = match str::from_utf8(message.data.as_ref()) {
                                 Ok(text) => text,
                                 Err(_) => {
@@ -1790,24 +1807,55 @@ async fn input_session(
                 }
             }
             Message::Binary(raw) => {
-                let Ok(text) = str::from_utf8(raw.as_ref()) else {
-                    if !send_server_message(
+                let parsed = match decode_input_binary(raw.as_ref()) {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        let _ = send_server_message(
+                            &mut socket,
+                            &ServerMessage::Error {
+                                message: format!("invalid binary input: {err:#}"),
+                            },
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                let (port, sequence, update) = match parsed {
+                    ClientMessage::Input {
+                        port,
+                        sequence,
+                        update,
+                    } => (port, sequence, update),
+                    _ => {
+                        let _ = send_server_message(
+                            &mut socket,
+                            &ServerMessage::Error {
+                                message: "unexpected non-input binary message".to_string(),
+                            },
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                if !owned_ports.is_empty() && !owned_ports.contains(&port) {
+                    let _ = send_server_message(
                         &mut socket,
                         &ServerMessage::Error {
-                            message: "binary messages must be UTF-8 JSON".to_string(),
+                            message: format!("port {port} not assigned to this player"),
                         },
                     )
-                    .await
-                    {
-                        break;
-                    }
+                    .await;
                     continue;
-                };
-
-                let response = process_input_payload(&state, &source_id, &owned_ports, true, text);
-                if !send_server_message(&mut socket, &response).await {
-                    break;
                 }
+                state.input_hub.apply_update(port, &source_id, &update);
+                let _ = send_server_message(
+                    &mut socket,
+                    &ServerMessage::Ack {
+                        sequence,
+                        server_time_ms: now_unix_ms(),
+                    },
+                )
+                .await;
             }
             Message::Ping(payload) => {
                 if socket.send(Message::Pong(payload)).await.is_err() {
