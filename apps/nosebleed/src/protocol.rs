@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::frame::VideoFrame;
-use crate::input::InputUpdate;
+use crate::input::{InputBinary, InputUpdate};
 
 const FRAME_MAGIC: &[u8; 4] = b"NBF0";
 const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
@@ -62,6 +62,27 @@ pub enum ServerMessage {
 
 pub fn parse_client_message(raw: &str) -> Result<ClientMessage> {
     serde_json::from_str(raw).context("invalid JSON message")
+}
+
+/// Decode a 34-byte binary input payload into a `ClientMessage::Input`.
+///
+/// This path avoids JSON parsing entirely for the latency-critical
+/// input loop. Commands (save, load, reset, ping) still use the JSON
+/// path via `parse_client_message`.
+pub fn decode_input_binary(raw: &[u8]) -> Result<ClientMessage> {
+    let bin = InputBinary::from_bytes(raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "binary input must be exactly {} bytes, got {}",
+            crate::input::INPUT_BINARY_SIZE,
+            raw.len()
+        )
+    })?;
+    let update = bin.to_input_update();
+    Ok(ClientMessage::Input {
+        port: bin.port,
+        sequence: Some(bin.sequence as u64),
+        update,
+    })
 }
 
 pub fn serialize_server_message(message: &ServerMessage) -> Result<String> {

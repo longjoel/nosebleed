@@ -489,7 +489,7 @@ fn set_core_option_default(key: String, default_value: String) {
     }
 }
 
-unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) {
+unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) { unsafe {
     let mut defaults = core_option_defaults()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -514,9 +514,9 @@ unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) {
 
         current = current.add(1);
     }
-}
+}}
 
-unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDefinition) {
+unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDefinition) { unsafe {
     core_option_defaults()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -537,9 +537,9 @@ unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDef
 
         current = current.add(1);
     }
-}
+}}
 
-unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOptionV2Definition) {
+unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOptionV2Definition) { unsafe {
     core_option_defaults()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -560,7 +560,7 @@ unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOption
 
         current = current.add(1);
     }
-}
+}}
 
 pub fn run_libretro(
     config: LibretroRunConfig,

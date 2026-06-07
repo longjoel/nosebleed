@@ -95,6 +95,108 @@ pub struct InputUpdate {
     pub axes: HashMap<Axis, f32>,
 }
 
+/// Fixed-size binary encoding for the high-frequency input path.
+///
+/// 34 bytes total — no allocation, no serialization overhead.
+///
+/// Layout (little-endian):
+/// ```text
+/// [0..1]   sequence: u16     (0 = no sequence)
+/// [2..5]   port: u32
+/// [6..9]   buttons: u32      (bitmask, 16 buttons → 16 bits used)
+/// [10..13] lx: f32
+/// [14..17] ly: f32
+/// [18..21] rx: f32
+/// [22..25] ry: f32
+/// [26..29] lt: f32
+/// [30..33] rt: f32
+/// ```
+pub const INPUT_BINARY_SIZE: usize = 34;
+
+#[derive(Debug, Clone, Copy)]
+pub struct InputBinary {
+    pub sequence: u16,
+    pub port: u32,
+    pub buttons: u32,
+    pub lx: f32,
+    pub ly: f32,
+    pub rx: f32,
+    pub ry: f32,
+    pub lt: f32,
+    pub rt: f32,
+}
+
+impl InputBinary {
+    /// Decode from the 34-byte wire format.
+    /// Returns `None` if the slice is the wrong size.
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        if raw.len() < INPUT_BINARY_SIZE {
+            return None;
+        }
+        Some(Self {
+            sequence: u16::from_le_bytes([raw[0], raw[1]]),
+            port: u32::from_le_bytes([raw[2], raw[3], raw[4], raw[5]]),
+            buttons: u32::from_le_bytes([raw[6], raw[7], raw[8], raw[9]]),
+            lx: f32::from_le_bytes([raw[10], raw[11], raw[12], raw[13]]),
+            ly: f32::from_le_bytes([raw[14], raw[15], raw[16], raw[17]]),
+            rx: f32::from_le_bytes([raw[18], raw[19], raw[20], raw[21]]),
+            ry: f32::from_le_bytes([raw[22], raw[23], raw[24], raw[25]]),
+            lt: f32::from_le_bytes([raw[26], raw[27], raw[28], raw[29]]),
+            rt: f32::from_le_bytes([raw[30], raw[31], raw[32], raw[33]]),
+        })
+    }
+
+    /// Encode to a 34-byte `Vec` (useful for relay / future use).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(INPUT_BINARY_SIZE);
+        buf.extend_from_slice(&self.sequence.to_le_bytes());
+        buf.extend_from_slice(&self.port.to_le_bytes());
+        buf.extend_from_slice(&self.buttons.to_le_bytes());
+        buf.extend_from_slice(&self.lx.to_le_bytes());
+        buf.extend_from_slice(&self.ly.to_le_bytes());
+        buf.extend_from_slice(&self.rx.to_le_bytes());
+        buf.extend_from_slice(&self.ry.to_le_bytes());
+        buf.extend_from_slice(&self.lt.to_le_bytes());
+        buf.extend_from_slice(&self.rt.to_le_bytes());
+        buf
+    }
+
+    /// Convert to the canonical `InputUpdate` HashMap representation.
+    pub fn to_input_update(&self) -> InputUpdate {
+        let mut buttons = HashMap::new();
+        for (retro_id, name) in [
+            (0, Button::B),
+            (1, Button::Y),
+            (2, Button::Select),
+            (3, Button::Start),
+            (4, Button::Up),
+            (5, Button::Down),
+            (6, Button::Left),
+            (7, Button::Right),
+            (8, Button::A),
+            (9, Button::X),
+            (10, Button::L),
+            (11, Button::R),
+            (12, Button::L2),
+            (13, Button::R2),
+            (14, Button::L3),
+            (15, Button::R3),
+        ] {
+            buttons.insert(name, (self.buttons >> retro_id) & 1 == 1);
+        }
+
+        let mut axes = HashMap::new();
+        axes.insert(Axis::Lx, self.lx);
+        axes.insert(Axis::Ly, self.ly);
+        axes.insert(Axis::Rx, self.rx);
+        axes.insert(Axis::Ry, self.ry);
+        axes.insert(Axis::L2, self.lt);
+        axes.insert(Axis::R2, self.rt);
+
+        InputUpdate { buttons, axes }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SourceState {
     buttons: [bool; JOYPAD_BUTTON_COUNT],
