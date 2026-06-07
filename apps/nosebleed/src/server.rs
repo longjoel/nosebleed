@@ -25,7 +25,8 @@ use tokio::net::TcpListener;
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, watch};
 use webrtc::api::APIBuilder;
-use webrtc::api::media_engine::{MIME_TYPE_PCMU, MIME_TYPE_VP8};
+use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_PCMU, MIME_TYPE_VP8, MediaEngine};
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -33,7 +34,6 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
@@ -178,7 +178,30 @@ impl ServerState {
             arcade: Arc::new(ArcadeService::new(6)),
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            webrtc_api: Arc::new(APIBuilder::new().build()),
+            webrtc_api: {
+                let mut media_engine = MediaEngine::default();
+                // Start from defaults (VP8, Opus, etc.) then add H.264 for GStreamer
+                media_engine.register_default_codecs().ok();
+                media_engine
+                    .register_codec(
+                        RTCRtpCodecParameters {
+                            capability: RTCRtpCodecCapability {
+                                mime_type: MIME_TYPE_H264.to_owned(),
+                                clock_rate: 90000,
+                                channels: 0,
+                                sdp_fmtp_line:
+                                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                                        .to_owned(),
+                                rtcp_feedback: vec![],
+                            },
+                            payload_type: 96,
+                            ..Default::default()
+                        },
+                        RTPCodecType::Video,
+                    )
+                    .ok();
+                Arc::new(APIBuilder::new().with_media_engine(media_engine).build())
+            },
         })
     }
 }
@@ -666,6 +689,70 @@ async fn webrtc_session(
                 }
             }
         };
+    }
+
+    // In MediaTracks mode the browser creates a negotiated "input" data channel
+    // (id=0). The server must mirror this with the same id so both sides agree.
+    // Negotiated channels don't fire on_data_channel — we must hook up on_message here.
+    if requested_transport == WebRtcTransportMode::MediaTracks && input_allowed {
+        match peer_connection
+            .create_data_channel("input", Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+                negotiated: Some(0),
+                ..Default::default()
+            }))
+            .await
+        {
+            Ok(channel) => {
+                let state_for_input = state.clone();
+                let source_for_input = source_id.clone();
+                let owned_ports_for_input = owned_ports.clone();
+                let channel_clone = channel.clone();
+                channel.on_message(Box::new(move |message: DataChannelMessage| {
+                    let state_for_input = state_for_input.clone();
+                    let source_for_input = source_for_input.clone();
+                    let owned_ports_for_input = owned_ports_for_input.clone();
+                    let channel = channel_clone.clone();
+                    Box::pin(async move {
+                        // Binary frames → binary input protocol (fast path)
+                        if message.data.len() == crate::input::INPUT_BINARY_SIZE {
+                            if let Some(bin) =
+                                crate::input::InputBinary::from_bytes(message.data.as_ref())
+                            {
+                                if input_allowed
+                                    && (owned_ports_for_input.is_empty()
+                                        || owned_ports_for_input.contains(&bin.port))
+                                {
+                                    let update = bin.to_input_update();
+                                    state_for_input
+                                        .input_hub
+                                        .apply_update(bin.port, &source_for_input, &update);
+                                }
+                            }
+                            return;
+                        }
+                        let raw = match str::from_utf8(message.data.as_ref()) {
+                            Ok(text) => text,
+                            Err(_) => return,
+                        };
+                        let response = process_input_payload(
+                            &state_for_input,
+                            &source_for_input,
+                            &owned_ports_for_input,
+                            input_allowed,
+                            raw,
+                        );
+                        if let Ok(payload) = serialize_server_message(&response) {
+                            let _ = channel.send_text(payload).await;
+                        }
+                    })
+                }));
+            }
+            Err(err) => {
+                eprintln!(
+                    "gstreamer webrtc: failed to create input data channel: {err:#}"
+                );
+            }
+        }
     }
 
     let cleanup_once = Arc::new(AtomicBool::new(false));
@@ -2099,8 +2186,10 @@ impl InputSessionRegistry {
                     return Err(format!("port {port} already assigned to another player"));
                 }
 
+                // Same player, different source — auto-release the old reservation
+                // so reconnects don't get stuck on 409.
                 if owner.reconnect_until.is_none() {
-                    return Err(format!("port {port} already active for this player"));
+                    self.per_port.remove(port);
                 }
             }
         }
