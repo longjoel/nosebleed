@@ -294,15 +294,7 @@ impl GstreamerPipelineSpec {
                 "! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true"
             )
             .to_string(),
-            audio_pipeline: concat!(
-                "appsrc name=audio_src is-live=true format=time do-timestamp=false ",
-                "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ",
-                "! audioconvert ! audioresample ",
-                "! opusenc audio-type=restricted-lowdelay frame-size=20 bitrate=64000 inband-fec=false ",
-                "! rtpopuspay pt=111 ",
-                "! appsink name=audio_sink sync=false async=false drop=true max-buffers=16 emit-signals=true"
-            )
-            .to_string(),
+            audio_pipeline: Self::opus_audio_pipeline(),
         }
     }
 
