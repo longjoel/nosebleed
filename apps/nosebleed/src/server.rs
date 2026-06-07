@@ -627,6 +627,7 @@ async fn webrtc_session(
                     let video_sender = match peer_connection.add_track(video_track).await {
                         Ok(sender) => sender,
                         Err(err) => {
+                            eprintln!("gstreamer webrtc: failed to attach video track: {err:#}");
                             cleanup_input_source(&state, &source_id);
                             return (
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -642,6 +643,7 @@ async fn webrtc_session(
                     let audio_sender = match peer_connection.add_track(audio_track).await {
                         Ok(sender) => sender,
                         Err(err) => {
+                            eprintln!("gstreamer webrtc: failed to attach audio track: {err:#}");
                             cleanup_input_source(&state, &source_id);
                             return (
                                 StatusCode::INTERNAL_SERVER_ERROR,
