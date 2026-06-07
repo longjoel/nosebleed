@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
+use gst_app::{AppSinkCallbacks, AppSrc};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use gst_app::{AppSinkCallbacks, AppSrc};
 use rtp::packet::Packet as RtpPacket;
 use tokio::sync::{broadcast, mpsc, watch};
 use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8};
@@ -55,7 +55,11 @@ impl SharedGstreamerMedia {
         } else {
             MIME_TYPE_VP8
         };
-        let video_clock_rate = if spec.video_codec == "h264" { 90000 } else { 90000 };
+        let video_clock_rate = if spec.video_codec == "h264" {
+            90000
+        } else {
+            90000
+        };
 
         let video_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
@@ -107,10 +111,22 @@ impl SharedGstreamerMedia {
 
         set_pipeline_state(&runtime, "playing");
 
-        tokio::spawn(drain_rtp_packets(video_rtp_rx, video_track.clone(), runtime.clone()));
-        tokio::spawn(drain_rtp_packets(audio_rtp_rx, audio_track.clone(), runtime.clone()));
+        tokio::spawn(drain_rtp_packets(
+            video_rtp_rx,
+            video_track.clone(),
+            runtime.clone(),
+        ));
+        tokio::spawn(drain_rtp_packets(
+            audio_rtp_rx,
+            audio_track.clone(),
+            runtime.clone(),
+        ));
         tokio::spawn(feed_video_appsrc(raw_video_rx, video_src, runtime.clone()));
-        tokio::spawn(feed_audio_appsrc(audio_tx.subscribe(), audio_src, runtime.clone()));
+        tokio::spawn(feed_audio_appsrc(
+            audio_tx.subscribe(),
+            audio_src,
+            runtime.clone(),
+        ));
 
         Ok(Self {
             video_track,

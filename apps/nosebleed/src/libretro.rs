@@ -330,7 +330,11 @@ fn start_save_directory_watch(path: PathBuf) {
 }
 
 fn save_snapshot_path(save_dir: &Path, content_path: &Path) -> Option<PathBuf> {
-    let stem = content_path.file_stem()?.to_string_lossy().trim().to_string();
+    let stem = content_path
+        .file_stem()?
+        .to_string_lossy()
+        .trim()
+        .to_string();
     if stem.is_empty() {
         return None;
     }
@@ -374,19 +378,32 @@ fn sync_save_ram_to_disk(
             .with_context(|| format!("failed to create save directory {}", parent.display()))?;
     }
 
-    fs::write(&snapshot_path, bytes)
-        .with_context(|| format!("failed to write save RAM snapshot to {}", snapshot_path.display()))?;
+    fs::write(&snapshot_path, bytes).with_context(|| {
+        format!(
+            "failed to write save RAM snapshot to {}",
+            snapshot_path.display()
+        )
+    })?;
     Ok(true)
 }
 
 fn state_snapshot_path(save_dir: &Path, content_path: &Path, slot: u8) -> Option<PathBuf> {
-    let stem = content_path.file_stem()?.to_string_lossy().trim().to_string();
+    let stem = content_path
+        .file_stem()?
+        .to_string_lossy()
+        .trim()
+        .to_string();
     if stem.is_empty() {
         return None;
     }
 
     let slot = slot.max(1);
-    Some(save_dir.join("states").join(stem).join(format!("slot-{slot:02}.state")))
+    Some(
+        save_dir
+            .join("states")
+            .join(stem)
+            .join(format!("slot-{slot:02}.state")),
+    )
 }
 
 fn sync_state_to_disk(
@@ -406,8 +423,9 @@ fn sync_state_to_disk(
     }
 
     if let Some(parent) = state_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create save state directory {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create save state directory {}", parent.display())
+        })?;
     }
 
     let mut buffer = vec![0u8; size];
@@ -416,8 +434,12 @@ fn sync_state_to_disk(
         return Ok(false);
     }
 
-    fs::write(&state_path, buffer)
-        .with_context(|| format!("failed to write save state snapshot to {}", state_path.display()))?;
+    fs::write(&state_path, buffer).with_context(|| {
+        format!(
+            "failed to write save state snapshot to {}",
+            state_path.display()
+        )
+    })?;
     Ok(true)
 }
 
@@ -489,78 +511,84 @@ fn set_core_option_default(key: String, default_value: String) {
     }
 }
 
-unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) { unsafe {
-    let mut defaults = core_option_defaults()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    defaults.clear();
+unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) {
+    unsafe {
+        let mut defaults = core_option_defaults()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        defaults.clear();
 
-    loop {
-        let variable = &*current;
-        if variable.key.is_null() {
-            break;
-        }
+        loop {
+            let variable = &*current;
+            if variable.key.is_null() {
+                break;
+            }
 
-        if let (Some(key), Some(definition)) = (
-            c_string_from_ptr(variable.key),
-            c_string_from_ptr(variable.value),
-        ) {
-            if let Some(default_value) = parse_core_option_default(&definition) {
-                if let Ok(value) = CString::new(default_value) {
-                    defaults.insert(key, value);
+            if let (Some(key), Some(definition)) = (
+                c_string_from_ptr(variable.key),
+                c_string_from_ptr(variable.value),
+            ) {
+                if let Some(default_value) = parse_core_option_default(&definition) {
+                    if let Ok(value) = CString::new(default_value) {
+                        defaults.insert(key, value);
+                    }
                 }
             }
-        }
 
-        current = current.add(1);
+            current = current.add(1);
+        }
     }
-}}
+}
 
-unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDefinition) { unsafe {
-    core_option_defaults()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDefinition) {
+    unsafe {
+        core_option_defaults()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
 
-    loop {
-        let definition = &*current;
-        if definition.key.is_null() {
-            break;
+        loop {
+            let definition = &*current;
+            if definition.key.is_null() {
+                break;
+            }
+
+            if let (Some(key), Some(default_value)) = (
+                c_string_from_ptr(definition.key),
+                c_string_from_ptr(definition.default_value),
+            ) {
+                set_core_option_default(key, default_value);
+            }
+
+            current = current.add(1);
         }
-
-        if let (Some(key), Some(default_value)) = (
-            c_string_from_ptr(definition.key),
-            c_string_from_ptr(definition.default_value),
-        ) {
-            set_core_option_default(key, default_value);
-        }
-
-        current = current.add(1);
     }
-}}
+}
 
-unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOptionV2Definition) { unsafe {
-    core_option_defaults()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOptionV2Definition) {
+    unsafe {
+        core_option_defaults()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
 
-    loop {
-        let definition = &*current;
-        if definition.key.is_null() {
-            break;
+        loop {
+            let definition = &*current;
+            if definition.key.is_null() {
+                break;
+            }
+
+            if let (Some(key), Some(default_value)) = (
+                c_string_from_ptr(definition.key),
+                c_string_from_ptr(definition.default_value),
+            ) {
+                set_core_option_default(key, default_value);
+            }
+
+            current = current.add(1);
         }
-
-        if let (Some(key), Some(default_value)) = (
-            c_string_from_ptr(definition.key),
-            c_string_from_ptr(definition.default_value),
-        ) {
-            set_core_option_default(key, default_value);
-        }
-
-        current = current.add(1);
     }
-}}
+}
 
 pub fn run_libretro(
     config: LibretroRunConfig,
@@ -776,21 +804,33 @@ unsafe fn run_libretro_unsafe(
                 }
                 RuntimeCommand::SaveState { slot } => {
                     let Some(content_path) = config.content_path.as_deref() else {
-                        eprintln!("save state requested for slot {slot}, but no content path is configured");
+                        eprintln!(
+                            "save state requested for slot {slot}, but no content path is configured"
+                        );
                         continue;
                     };
 
                     let Some(serialize_size) = retro_serialize_size else {
-                        eprintln!("save state requested for slot {slot}, but core does not expose retro_serialize_size");
+                        eprintln!(
+                            "save state requested for slot {slot}, but core does not expose retro_serialize_size"
+                        );
                         continue;
                     };
                     let Some(serialize) = retro_serialize else {
-                        eprintln!("save state requested for slot {slot}, but core does not expose retro_serialize");
+                        eprintln!(
+                            "save state requested for slot {slot}, but core does not expose retro_serialize"
+                        );
                         continue;
                     };
 
                     let save_dir = save_directory_path();
-                    match sync_state_to_disk(&save_dir, content_path, slot, serialize_size, serialize) {
+                    match sync_state_to_disk(
+                        &save_dir,
+                        content_path,
+                        slot,
+                        serialize_size,
+                        serialize,
+                    ) {
                         Ok(true) => eprintln!("save state slot {slot} written to disk"),
                         Ok(false) => eprintln!("save state slot {slot} produced no snapshot"),
                         Err(err) => eprintln!("save state sync failed for slot {slot}: {err:#}"),
@@ -798,12 +838,16 @@ unsafe fn run_libretro_unsafe(
                 }
                 RuntimeCommand::LoadState { slot } => {
                     let Some(content_path) = config.content_path.as_deref() else {
-                        eprintln!("load state requested for slot {slot}, but no content path is configured");
+                        eprintln!(
+                            "load state requested for slot {slot}, but no content path is configured"
+                        );
                         continue;
                     };
 
                     let Some(unserialize) = retro_unserialize else {
-                        eprintln!("load state requested for slot {slot}, but core does not expose retro_unserialize");
+                        eprintln!(
+                            "load state requested for slot {slot}, but core does not expose retro_unserialize"
+                        );
                         continue;
                     };
 

@@ -17,7 +17,6 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::{MIME_TYPE_H264, MediaEngine};
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -25,14 +24,17 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+};
 use webrtc::track::track_local::TrackLocal;
 
 use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
 use crate::gstreamer_backend::SharedGstreamerMedia;
 use crate::input::{Button, InputHub};
-use crate::media::{MediaCapabilities, MediaConfig, WebRtcTransportMode};
 use crate::media::select_encoder;
+use crate::media::{MediaCapabilities, MediaConfig, WebRtcTransportMode};
 use crate::protocol::{
     ClientCommand, ClientMessage, ServerMessage, decode_input_binary, now_unix_ms,
     parse_client_message, serialize_server_message,
@@ -248,7 +250,7 @@ async fn healthz() -> &'static str {
 async fn media_capabilities(State(state): State<ServerState>) -> Json<MediaCapabilities> {
     let mut capabilities = (*state.media_capabilities).clone();
     capabilities.runtime.backend = state.media_config.selected_backend.as_str();
-        if let Some(gstreamer_media) = state.gstreamer_media.as_ref() {
+    if let Some(gstreamer_media) = state.gstreamer_media.as_ref() {
         capabilities.runtime = gstreamer_media.snapshot();
     }
     Json(capabilities)
@@ -511,10 +513,15 @@ async fn webrtc_session(
     // Negotiated channels don't fire on_data_channel — we must hook up on_message here.
     if requested_transport == WebRtcTransportMode::MediaTracks && input_allowed {
         match peer_connection
-            .create_data_channel("input", Some(webrtc::data_channel::data_channel_init::RTCDataChannelInit {
-                negotiated: Some(0),
-                ..Default::default()
-            }))
+            .create_data_channel(
+                "input",
+                Some(
+                    webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+                        negotiated: Some(0),
+                        ..Default::default()
+                    },
+                ),
+            )
             .await
         {
             Ok(channel) => {
@@ -538,9 +545,11 @@ async fn webrtc_session(
                                         || owned_ports_for_input.contains(&bin.port))
                                 {
                                     let update = bin.to_input_update();
-                                    state_for_input
-                                        .input_hub
-                                        .apply_update(bin.port, &source_for_input, &update);
+                                    state_for_input.input_hub.apply_update(
+                                        bin.port,
+                                        &source_for_input,
+                                        &update,
+                                    );
                                 }
                             }
                             return;
@@ -563,9 +572,7 @@ async fn webrtc_session(
                 }));
             }
             Err(err) => {
-                eprintln!(
-                    "gstreamer webrtc: failed to create input data channel: {err:#}"
-                );
+                eprintln!("gstreamer webrtc: failed to create input data channel: {err:#}");
             }
         }
     }
@@ -644,9 +651,11 @@ async fn webrtc_session(
                                             || owned_ports_for_input.contains(&bin.port))
                                     {
                                         let update = bin.to_input_update();
-                                        state_for_input
-                                            .input_hub
-                                            .apply_update(bin.port, &source_for_input, &update);
+                                        state_for_input.input_hub.apply_update(
+                                            bin.port,
+                                            &source_for_input,
+                                            &update,
+                                        );
                                     }
                                 }
                                 return;
@@ -815,7 +824,6 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
         .map_err(|err| anyhow!("failed to create peer connection: {err:#}"))?;
     Ok(Arc::new(connection))
 }
-
 
 fn cleanup_input_source_once(state: &ServerState, source_id: &str, cleanup_once: &AtomicBool) {
     if cleanup_once.swap(true, Ordering::Relaxed) {

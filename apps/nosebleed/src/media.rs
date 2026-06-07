@@ -133,7 +133,8 @@ impl VideoEncoderConfig {
     pub fn from_env(codec_override: Option<&str>, encoder_override: Option<&str>) -> Result<Self> {
         let mut config = Self::default();
 
-        let codec_raw = codec_override.map(|s| s.to_owned())
+        let codec_raw = codec_override
+            .map(|s| s.to_owned())
             .or_else(|| env::var(Self::CODEC_ENV).ok());
         if let Some(ref raw) = codec_raw {
             config.codec = match raw.trim().to_ascii_lowercase().as_str() {
@@ -146,7 +147,8 @@ impl VideoEncoderConfig {
             };
         }
 
-        let encoder_raw = encoder_override.map(|s| s.to_owned())
+        let encoder_raw = encoder_override
+            .map(|s| s.to_owned())
             .or_else(|| env::var(Self::ENCODER_ENV).ok());
         if let Some(ref raw) = encoder_raw {
             config.encoder = VideoEncoderSelection::parse(raw)?;
@@ -156,10 +158,16 @@ impl VideoEncoderConfig {
             config.bitrate_kbps = raw.parse::<u32>().unwrap_or(config.bitrate_kbps).max(100);
         }
         if let Ok(raw) = env::var(Self::KEYFRAME_ENV) {
-            config.keyframe_interval = raw.parse::<u32>().unwrap_or(config.keyframe_interval).max(1);
+            config.keyframe_interval = raw
+                .parse::<u32>()
+                .unwrap_or(config.keyframe_interval)
+                .max(1);
         }
         if let Ok(raw) = env::var(Self::LOW_LATENCY_ENV) {
-            config.low_latency = !matches!(raw.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off");
+            config.low_latency = !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            );
         }
 
         Ok(config)
@@ -427,9 +435,7 @@ pub struct SelectedEncoder {
     pub selection_reason: String,
 }
 
-pub fn select_encoder(
-    config: &VideoEncoderConfig,
-) -> Result<SelectedEncoder> {
+pub fn select_encoder(config: &VideoEncoderConfig) -> Result<SelectedEncoder> {
     use gstreamer as gst;
 
     gst::init().map_err(|err| anyhow!("GStreamer init failed: {err}"))?;
@@ -494,7 +500,11 @@ pub fn select_encoder(
         }
 
         let spec = build_hardcoded_pipeline(element, codec, config, has)?;
-        let label = if spec.hardware { "hardware" } else { "software" };
+        let label = if spec.hardware {
+            "hardware"
+        } else {
+            "software"
+        };
         return Ok(SelectedEncoder {
             spec,
             candidates,
@@ -511,7 +521,6 @@ pub fn select_encoder(
             .collect::<Vec<_>>()
     ))
 }
-
 
 fn build_candidates(has: impl Fn(&str) -> bool) -> Vec<EncoderCandidate> {
     vec![
@@ -612,9 +621,7 @@ fn build_hardcoded_pipeline(
             config.keyframe_interval,
         )),
         ("vp8enc", "vp8") => Ok(GstreamerPipelineSpec::vp8_opus_software()),
-        _ => Err(anyhow!(
-            "no pipeline builder for encoder {element}/{codec}"
-        )),
+        _ => Err(anyhow!("no pipeline builder for encoder {element}/{codec}")),
     }
 }
 
@@ -652,9 +659,8 @@ impl MediaCapabilities {
 
         // Probe encoders if GStreamer is available
         let (candidates, selected, reason) = if gstreamer.available_for_runtime {
-            let candidates = build_candidates(|name| {
-                gstreamer::ElementFactory::find(name).is_some()
-            });
+            let candidates =
+                build_candidates(|name| gstreamer::ElementFactory::find(name).is_some());
             // Try selection to get the exact selected encoder, but don't fail on auto
             let (selected, reason) = match select_encoder(&config.video_encoder) {
                 Ok(sel) => {

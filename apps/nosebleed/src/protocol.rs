@@ -100,7 +100,12 @@ mod tests {
         )
         .expect("save state command should parse");
         match save_message {
-            ClientMessage::Command { command, port, slot, sequence } => {
+            ClientMessage::Command {
+                command,
+                port,
+                slot,
+                sequence,
+            } => {
                 assert_eq!(command, ClientCommand::SaveState);
                 assert_eq!(port, 0);
                 assert_eq!(slot, Some(3));
@@ -114,7 +119,12 @@ mod tests {
         )
         .expect("load state command should parse");
         match load_message {
-            ClientMessage::Command { command, port, slot, sequence } => {
+            ClientMessage::Command {
+                command,
+                port,
+                slot,
+                sequence,
+            } => {
                 assert_eq!(command, ClientCommand::LoadState);
                 assert_eq!(port, 0);
                 assert_eq!(slot, Some(5));
