@@ -28,7 +28,6 @@ use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::{MIME_TYPE_PCMU, MIME_TYPE_VP8};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -57,7 +56,6 @@ use crate::session::{
 const RTC_CHUNK_MAGIC: &[u8; 4] = b"NBC1";
 const RTC_CHUNK_HEADER_LEN: usize = 4 + 4 + 2 + 2;
 const RTC_CHUNK_PAYLOAD_MAX: usize = 14 * 1024;
-const RTC_STUN_SERVER: &str = "stun:stun.l.google.com:19302";
 const FRAME_MAGIC: &[u8; 4] = b"NBF0";
 const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
 const VP8_VIDEO_MAGIC: &[u8; 4] = b"NBV1";
@@ -943,10 +941,7 @@ async fn webrtc_session(
 
 async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnection>> {
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec![RTC_STUN_SERVER.to_string()],
-            ..Default::default()
-        }],
+        ice_servers: vec![], // host-only — no STUN dependency for LAN
         ..Default::default()
     };
 
