@@ -504,15 +504,6 @@ async fn webrtc_session(
             };
             tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
         }
-        {
-            cleanup_input_source(&state, &source_id);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "gstreamer backend selected but binary lacks media-gstreamer feature"
-                    .to_string(),
-            )
-                .into_response();
-        }
     }
 
     // In MediaTracks mode the browser creates a negotiated "input" data channel
