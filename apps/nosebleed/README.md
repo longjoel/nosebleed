@@ -41,6 +41,15 @@ Useful optional args:
 - `--fps 60`
 - `--width 320` (mock mode only)
 - `--height 240` (mock mode only)
+- `--media-backend legacy|gstreamer`
+
+Media backend selection:
+
+- CLI: `--media-backend legacy|gstreamer`
+- Env: `NOSEBLEED_MEDIA_BACKEND=legacy|gstreamer`
+- JSON config: `"media_backend": "legacy"` (or `"gstreamer"`)
+
+Current default remains `legacy` while the GStreamer path is under development.
 
 Run from a JSON config file:
 
@@ -67,6 +76,7 @@ Runtime session control endpoints are available over HTTP:
 - `GET /session/status`
 - `POST /session/start`
 - `POST /session/stop`
+- `GET /media/capabilities`
 
 Example start payload:
 
@@ -245,6 +255,11 @@ Response body:
 }
 ```
 
+Media backend diagnostics:
+
+- `GET /media/capabilities` returns the selected backend, compiled backends, runtime-available backends, and GStreamer element discovery status.
+- When built without GStreamer support, the endpoint reports the missing Cargo feature explicitly.
+
 ## Notes for low latency
 
 - The pipeline intentionally favors dropping old frames over queueing.
@@ -258,6 +273,7 @@ Response body:
 - WebRTC video supports VP8 packet mode (`NBV1`) but does not yet use RTP media tracks.
 - Environment callback support is minimal (pixel format negotiation only).
 - Audio is uncompressed PCM over WebSocket (works, but bandwidth-heavy).
+- The new `gstreamer` backend selector and `/media/capabilities` endpoint are foundation-only in this phase; the active media transport is still the legacy path until the first GStreamer pipeline lands.
 
 ## WebRTC path
 

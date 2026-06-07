@@ -12,6 +12,10 @@ pub mod core;
 pub mod frame;
 pub mod input;
 pub mod libretro;
+pub mod media;
 pub mod protocol;
 pub mod server;
 pub mod session;
+
+#[cfg(feature = "media-gstreamer")]
+pub mod gstreamer_backend;

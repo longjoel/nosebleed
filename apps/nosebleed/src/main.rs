@@ -13,6 +13,7 @@ use nosebleed::audio::AudioBus;
 use nosebleed::core as runtime_core;
 use nosebleed::frame::LatestFrameStore;
 use nosebleed::input::InputHub;
+use nosebleed::media::MediaConfig;
 use nosebleed::server::{self, ServerState};
 use nosebleed::session::{LaunchConfig, SessionManager, WorkspaceConfig};
 
@@ -64,6 +65,9 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     session_copy_content: bool,
+
+    #[arg(long, env = "NOSEBLEED_MEDIA_BACKEND")]
+    media_backend: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -74,6 +78,7 @@ struct FileConfig {
     fps: Option<f32>,
     width: Option<u32>,
     height: Option<u32>,
+    media_backend: Option<String>,
     auth_secret: Option<String>,
     require_auth: Option<bool>,
     reconnect_window_ms: Option<u64>,
@@ -92,6 +97,7 @@ struct SessionConfig {
 struct AppConfig {
     listen: SocketAddr,
     launch: LaunchConfig,
+    media: MediaConfig,
     auth_secret: Option<String>,
     require_auth: bool,
     reconnect_window_ms: u64,
@@ -107,6 +113,7 @@ async fn main() -> Result<()> {
     let input_hub = Arc::new(InputHub::default());
     let shutdown = Arc::new(AtomicBool::new(false));
     let auth_config = build_auth_config(&config)?;
+    let media_capabilities = nosebleed::media::MediaCapabilities::detect(&config.media);
 
     let (video_rx, dispatcher_handle) =
         runtime_core::spawn_frame_dispatcher(frame_store.clone(), shutdown.clone());
@@ -129,9 +136,17 @@ async fn main() -> Result<()> {
         Arc::new(AtomicU64::new(1)),
         Arc::new(auth_config),
         session_manager.clone(),
-    );
+        config.media.clone(),
+        media_capabilities.clone(),
+    )?;
 
     eprintln!("starting server: listen={}", config.listen);
+    eprintln!(
+        "media backend selected={} compiled={:?} available={:?}",
+        media_capabilities.selected_backend.as_str(),
+        media_capabilities.compiled_backends,
+        media_capabilities.available_backends
+    );
     let server_result = server::run(server_state, config.listen).await;
 
     shutdown.store(true, Ordering::Relaxed);
@@ -196,6 +211,10 @@ fn load_app_config(cli: &Cli) -> Result<AppConfig> {
             copy_content: session.copy_content.unwrap_or(false),
         },
     };
+    let media = MediaConfig::from_sources(
+        cli.media_backend.as_deref(),
+        file_config.media_backend.as_deref(),
+    )?;
 
     Ok(AppConfig {
         listen: cli.listen.or(file_config.listen).unwrap_or_else(|| {
@@ -204,6 +223,7 @@ fn load_app_config(cli: &Cli) -> Result<AppConfig> {
                 .expect("hard-coded listen address should parse")
         }),
         launch,
+        media,
         auth_secret: cli.auth_secret.clone().or(file_config.auth_secret),
         require_auth: cli.require_auth || file_config.require_auth.unwrap_or(false),
         reconnect_window_ms: cli

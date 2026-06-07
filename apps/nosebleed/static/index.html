@@ -85,12 +85,19 @@
       position: relative;
     }
 
-    canvas {
+    canvas,
+    #rtcVideo {
       width: 100%;
       height: auto;
       image-rendering: pixelated;
       display: block;
       max-height: 70vh;
+    }
+
+    #rtcVideo {
+      display: none;
+      image-rendering: auto;
+      background: #000;
     }
 
     .overlay {
@@ -304,6 +311,8 @@
     <section class="content">
       <div class="video-wrap">
         <canvas id="screen" width="320" height="240"></canvas>
+        <video id="rtcVideo" playsinline autoplay muted></video>
+        <audio id="rtcAudio" playsinline autoplay style="display:none"></audio>
         <div class="overlay" id="frameMeta">waiting for frame</div>
       </div>
 
@@ -400,6 +409,8 @@
     const lightTxEl = document.getElementById("lightTx");
     const lightAckEl = document.getElementById("lightAck");
     const canvas = document.getElementById("screen");
+    const rtcVideoEl = document.getElementById("rtcVideo");
+    const rtcAudioEl = document.getElementById("rtcAudio");
     const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
 
     const wsScheme = location.protocol === "https:" ? "wss" : "ws";
@@ -431,6 +442,8 @@
     let rtcVideoDecoderReady = false;
     let rtcVp8DecodeSupported = null;
     let rtcLastVideoPtsUs = 0;
+    let rtcVideoTrackReady = false;
+    let rtcAudioTrackReady = false;
     let audioCtx;
     let audioGainNode;
     let audioStartTime = 0;
@@ -573,10 +586,26 @@
       return preferWebRtcTransport && typeof RTCPeerConnection !== "undefined";
     }
 
+    function rtcMediaState(trackReady, idleState = "closed") {
+      if (trackReady) {
+        return "open";
+      }
+      if (!rtcPeer) {
+        return idleState;
+      }
+      if (rtcPeer.connectionState === "connecting") {
+        return "connecting";
+      }
+      if (rtcPeer.connectionState === "connected") {
+        return "waiting";
+      }
+      return "closed";
+    }
+
     function updateTransport() {
       if (usingWebRtcTransport()) {
-        const audioState = audioEnabled ? dataChannelState(rtcAudioDc, "idle") : "idle";
-        transportEl.innerHTML = `video: rtc-${dataChannelState(rtcVideoDc)}<br />audio: rtc-${audioState}<br />input: rtc-${dataChannelState(rtcInputDc)}`;
+        const audioState = audioEnabled ? rtcMediaState(rtcAudioTrackReady, "idle") : "idle";
+        transportEl.innerHTML = `video: rtc-${rtcMediaState(rtcVideoTrackReady)}<br />audio: rtc-${audioState}<br />input: rtc-${dataChannelState(rtcInputDc)}`;
         return;
       }
       const audioState = audioEnabled ? transportState(audioWs) : "idle";
@@ -1651,6 +1680,14 @@
       rtcVideoDecoder = null;
       rtcVideoDecoderReady = false;
       rtcLastVideoPtsUs = 0;
+      rtcVideoTrackReady = false;
+      rtcAudioTrackReady = false;
+      rtcVideoEl.pause();
+      rtcVideoEl.srcObject = null;
+      rtcVideoEl.style.display = "none";
+      rtcAudioEl.pause();
+      rtcAudioEl.srcObject = null;
+      canvas.style.display = "block";
 
       rtcVideoChunkMap.clear();
       rtcAudioChunkMap.clear();
@@ -1681,7 +1718,6 @@
     }
 
     async function postWebRtcOffer(localDescription) {
-      const requestedVideoMode = probeVp8WebCodecDecode() ? "vp8" : "raw";
       const response = await fetch(webrtcSessionUrl, {
         method: "POST",
         headers: {
@@ -1690,7 +1726,7 @@
         body: JSON.stringify({
           type: localDescription.type,
           sdp: localDescription.sdp,
-          video_mode: requestedVideoMode,
+          video_mode: "track-vp8",
         }),
       });
 
@@ -1723,26 +1759,60 @@
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
       rtcPeer = peer;
+      rtcVideoTrackReady = false;
+      rtcAudioTrackReady = false;
 
-      const videoChannel = peer.createDataChannel("video", {
-        ordered: false,
-        maxRetransmits: 0,
-      });
-      videoChannel.binaryType = "arraybuffer";
-      rtcVideoDc = videoChannel;
-
-      const audioChannel = peer.createDataChannel("audio", {
-        ordered: true,
-        maxRetransmits: 2,
-      });
-      audioChannel.binaryType = "arraybuffer";
-      rtcAudioDc = audioChannel;
+      peer.addTransceiver("video", { direction: "recvonly" });
+      peer.addTransceiver("audio", { direction: "recvonly" });
 
       const inputChannel = peer.createDataChannel("input", {
         ordered: false,
         maxRetransmits: 0,
       });
       rtcInputDc = inputChannel;
+
+      peer.ontrack = (event) => {
+        if (rtcPeer !== peer) {
+          return;
+        }
+
+        if (event.track.kind === "video") {
+          rtcVideoTrackReady = true;
+          rtcVideoEl.srcObject = new MediaStream([event.track]);
+          rtcVideoEl.style.display = "block";
+          canvas.style.display = "none";
+          frameMetaEl.textContent = "webrtc media track";
+          rtcVideoEl.play().catch(() => {});
+          event.track.onended = () => {
+            rtcVideoTrackReady = false;
+            rtcVideoEl.style.display = "none";
+            canvas.style.display = "block";
+            updateTransport();
+          };
+          updateTransport();
+          return;
+        }
+
+        if (event.track.kind === "audio") {
+          rtcAudioTrackReady = true;
+          rtcAudioEl.srcObject = new MediaStream([event.track]);
+          if (audioEnabled) {
+            rtcAudioEl.play().then(() => {
+              audioStateEl.textContent = "state: connected";
+            }).catch(() => {
+              audioStateEl.textContent = "state: blocked by browser";
+            });
+          }
+          event.track.onended = () => {
+            rtcAudioTrackReady = false;
+            if (audioEnabled) {
+              audioStateEl.textContent = "state: waiting for rtc audio";
+            }
+            updateTransport();
+          };
+          updateTransport();
+        }
+      };
 
       peer.onconnectionstatechange = () => {
         if (rtcPeer !== peer) {
@@ -1762,58 +1832,6 @@
           setStatus("webrtc disconnected", "error");
           scheduleWebRtcReconnect();
         }
-      };
-
-      videoChannel.onopen = () => updateTransport();
-      videoChannel.onclose = () => updateTransport();
-      videoChannel.onerror = () => {
-        setStatus("webrtc video error", "error");
-      };
-      videoChannel.onmessage = (event) => {
-        const payloadBuffer = decodeRtcPayload(rtcVideoChunkMap, event.data);
-        if (!payloadBuffer) {
-          return;
-        }
-        const vp8Packet = decodeVp8VideoPacket(payloadBuffer);
-        if (vp8Packet) {
-          if (decodeVp8WebCodecFrame(vp8Packet)) {
-            return;
-          }
-        }
-        const packet = decodeFramePacket(payloadBuffer);
-        if (!packet) {
-          return;
-        }
-        renderFrame(packet);
-      };
-
-      audioChannel.onopen = () => {
-        updateTransport();
-        if (audioEnabled) {
-          audioStateEl.textContent = "state: connected";
-        }
-      };
-      audioChannel.onclose = () => {
-        updateTransport();
-        if (audioEnabled) {
-          audioStateEl.textContent = "state: reconnecting";
-        }
-      };
-      audioChannel.onerror = () => {
-        if (audioEnabled) {
-          audioStateEl.textContent = "state: transport error";
-        }
-      };
-      audioChannel.onmessage = (event) => {
-        const payloadBuffer = decodeRtcPayload(rtcAudioChunkMap, event.data);
-        if (!payloadBuffer) {
-          return;
-        }
-        const packet = decodeAudioPacket(payloadBuffer);
-        if (!packet) {
-          return;
-        }
-        enqueueAudioPacket(packet);
       };
 
       inputChannel.onopen = () => {
@@ -1919,6 +1937,20 @@
 
     async function enableAudio() {
       try {
+        if (usingWebRtcTransport()) {
+          audioEnabled = true;
+          audioButton.disabled = true;
+          audioButton.textContent = "Audio Enabled";
+          if (rtcAudioEl.srcObject) {
+            await rtcAudioEl.play();
+            audioStateEl.textContent = "state: connected";
+          } else {
+            audioStateEl.textContent = "state: waiting for rtc audio";
+          }
+          updateTransport();
+          return;
+        }
+
         if (!audioCtx) {
           audioCtx = new AudioContext({ latencyHint: "interactive" });
           audioGainNode = audioCtx.createGain();
@@ -1948,7 +1980,8 @@
 
       if (usingWebRtcTransport()) {
         updateTransport();
-        if (rtcAudioDc?.readyState === "open") {
+        if (rtcAudioTrackReady && rtcAudioEl.srcObject) {
+          rtcAudioEl.play().catch(() => {});
           audioStateEl.textContent = "state: connected";
         } else {
           audioStateEl.textContent = "state: waiting for rtc audio";

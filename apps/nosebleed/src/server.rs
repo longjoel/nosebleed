@@ -40,7 +40,10 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 
 use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
+#[cfg(feature = "media-gstreamer")]
+use crate::gstreamer_backend::SharedGstreamerMedia;
 use crate::input::{Button, InputHub};
+use crate::media::{MediaBackend, MediaCapabilities, MediaConfig, WebRtcTransportMode};
 use crate::protocol::{
     ClientCommand, ClientMessage, ServerMessage, now_unix_ms, parse_client_message,
     serialize_server_message,
@@ -68,13 +71,6 @@ const AUDIO_PACKET_MAGIC: &[u8; 4] = b"NBA0";
 const AUDIO_PACKET_HEADER_LEN: usize = 34;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VideoChannelMode {
-    Raw,
-    Vp8DataChannel,
-    Vp8Track,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WsVideoMode {
     Raw,
     Jpeg { quality: u8 },
@@ -93,6 +89,10 @@ pub struct ServerState {
     pub webrtc_vp8_rx: watch::Receiver<Option<Arc<[u8]>>>,
     pub webrtc_vp8_track: Arc<TrackLocalStaticSample>,
     pub webrtc_pcmu_track: Arc<TrackLocalStaticSample>,
+    pub media_config: MediaConfig,
+    pub media_capabilities: Arc<MediaCapabilities>,
+    #[cfg(feature = "media-gstreamer")]
+    pub gstreamer_media: Option<Arc<SharedGstreamerMedia>>,
     pub audio_tx: broadcast::Sender<Arc<[u8]>>,
     pub input_hub: Arc<InputHub>,
     pub shutdown: Arc<AtomicBool>,
@@ -114,7 +114,9 @@ impl ServerState {
         next_client_id: Arc<AtomicU64>,
         auth: Arc<AuthConfig>,
         session_manager: Arc<SessionManager>,
-    ) -> Self {
+        media_config: MediaConfig,
+        media_capabilities: MediaCapabilities,
+    ) -> Result<Self> {
         let webrtc_vp8_track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_VP8.to_owned(),
@@ -137,11 +139,26 @@ impl ServerState {
             "nosebleed".to_owned(),
         ));
         spawn_shared_webrtc_pcmu_track(audio_tx.subscribe(), webrtc_pcmu_track.clone());
-        Self {
+
+        #[cfg(feature = "media-gstreamer")]
+        let gstreamer_media = if media_config.selected_backend == MediaBackend::Gstreamer {
+            Some(Arc::new(SharedGstreamerMedia::start(
+                video_rx.clone(),
+                audio_tx.clone(),
+            )?))
+        } else {
+            None
+        };
+
+        Ok(Self {
             video_rx,
             webrtc_vp8_rx,
             webrtc_vp8_track,
             webrtc_pcmu_track,
+            media_config,
+            media_capabilities: Arc::new(media_capabilities),
+            #[cfg(feature = "media-gstreamer")]
+            gstreamer_media,
             audio_tx,
             input_hub,
             shutdown,
@@ -152,7 +169,7 @@ impl ServerState {
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api: Arc::new(APIBuilder::new().build()),
-        }
+        })
     }
 }
 
@@ -247,6 +264,7 @@ pub async fn run(state: ServerState, listen_addr: SocketAddr) -> Result<()> {
         .route("/", get(index))
         .route("/arcade", get(arcade_index))
         .route("/healthz", get(healthz))
+        .route("/media/capabilities", get(media_capabilities))
         .route("/session/status", get(session_status))
         .route("/session/start", post(session_start))
         .route("/session/stop", post(session_stop))
@@ -293,6 +311,16 @@ async fn arcade_index() -> Html<&'static str> {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn media_capabilities(State(state): State<ServerState>) -> Json<MediaCapabilities> {
+    let mut capabilities = (*state.media_capabilities).clone();
+    capabilities.runtime.backend = state.media_config.selected_backend.as_str();
+    #[cfg(feature = "media-gstreamer")]
+    if let Some(gstreamer_media) = state.gstreamer_media.as_ref() {
+        capabilities.runtime = gstreamer_media.snapshot();
+    }
+    Json(capabilities)
 }
 
 async fn session_status(State(state): State<ServerState>) -> Json<SessionStatus> {
@@ -419,7 +447,7 @@ async fn video_ws(
         WsVideoMode::Raw
     } else {
         WsVideoMode::Jpeg {
-            quality: sanitize_jpeg_quality(query.jpeg_quality.unwrap_or(70))
+            quality: sanitize_jpeg_quality(query.jpeg_quality.unwrap_or(70)),
         }
     };
     ws.on_upgrade(move |socket| video_session(socket, rx, mode))
@@ -474,11 +502,9 @@ async fn webrtc_session(
         Ok(claims) => claims,
         Err(response) => return response,
     };
-    let requested_video_mode = match offer.video_mode.as_deref() {
-        Some("track-vp8") => VideoChannelMode::Vp8Track,
-        Some("vp8") => VideoChannelMode::Vp8DataChannel,
-        _ => VideoChannelMode::Raw,
-    };
+    let requested_transport = state
+        .media_config
+        .select_webrtc_transport(offer.video_mode.as_deref());
 
     let input_allowed = claims
         .as_ref()
@@ -529,40 +555,105 @@ async fn webrtc_session(
         }
     };
 
-    if requested_video_mode == VideoChannelMode::Vp8Track {
-        let video_track = state.webrtc_vp8_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
-        let video_sender = match peer_connection.add_track(video_track).await {
-            Ok(sender) => sender,
-            Err(err) => {
-                cleanup_input_source(&state, &source_id);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to attach webrtc video track: {err:#}"),
-                )
-                    .into_response();
+    if requested_transport == WebRtcTransportMode::MediaTracks {
+        match state.media_config.selected_backend {
+            MediaBackend::Legacy => {
+                let video_track =
+                    state.webrtc_vp8_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+                let video_sender = match peer_connection.add_track(video_track).await {
+                    Ok(sender) => sender,
+                    Err(err) => {
+                        cleanup_input_source(&state, &source_id);
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to attach webrtc video track: {err:#}"),
+                        )
+                            .into_response();
+                    }
+                };
+
+                tokio::spawn(async move { while video_sender.read_rtcp().await.is_ok() {} });
+
+                let audio_track =
+                    state.webrtc_pcmu_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+                let audio_sender = match peer_connection.add_track(audio_track).await {
+                    Ok(sender) => sender,
+                    Err(err) => {
+                        cleanup_input_source(&state, &source_id);
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("failed to attach webrtc audio track: {err:#}"),
+                        )
+                            .into_response();
+                    }
+                };
+
+                tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
             }
-        };
+            MediaBackend::Gstreamer => {
+                #[cfg(feature = "media-gstreamer")]
+                {
+                    let Some(gstreamer_media) = state.gstreamer_media.as_ref() else {
+                        cleanup_input_source(&state, &source_id);
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "gstreamer backend selected but runtime was unavailable".to_string(),
+                        )
+                            .into_response();
+                    };
 
-        tokio::spawn(async move {
-            while video_sender.read_rtcp().await.is_ok() {}
-        });
+                    let runtime = gstreamer_media.snapshot();
+                    eprintln!(
+                        "starting gstreamer webrtc session: video_encoder={} audio_encoder={} pipeline_state={} video_pipeline={} audio_pipeline={}",
+                        runtime.video_encoder.unwrap_or("unknown"),
+                        runtime.audio_encoder.unwrap_or("unknown"),
+                        runtime.pipeline_state,
+                        runtime.video_pipeline.as_deref().unwrap_or("<none>"),
+                        runtime.audio_pipeline.as_deref().unwrap_or("<none>"),
+                    );
 
-        let audio_track = state.webrtc_pcmu_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
-        let audio_sender = match peer_connection.add_track(audio_track).await {
-            Ok(sender) => sender,
-            Err(err) => {
-                cleanup_input_source(&state, &source_id);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to attach webrtc audio track: {err:#}"),
-                )
-                    .into_response();
+                    let video_track =
+                        gstreamer_media.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+                    let video_sender = match peer_connection.add_track(video_track).await {
+                        Ok(sender) => sender,
+                        Err(err) => {
+                            cleanup_input_source(&state, &source_id);
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("failed to attach gstreamer video track: {err:#}"),
+                            )
+                                .into_response();
+                        }
+                    };
+                    tokio::spawn(async move { while video_sender.read_rtcp().await.is_ok() {} });
+
+                    let audio_track =
+                        gstreamer_media.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+                    let audio_sender = match peer_connection.add_track(audio_track).await {
+                        Ok(sender) => sender,
+                        Err(err) => {
+                            cleanup_input_source(&state, &source_id);
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("failed to attach gstreamer audio track: {err:#}"),
+                            )
+                                .into_response();
+                        }
+                    };
+                    tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
+                }
+                #[cfg(not(feature = "media-gstreamer"))]
+                {
+                    cleanup_input_source(&state, &source_id);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "gstreamer backend selected but binary lacks media-gstreamer feature"
+                            .to_string(),
+                    )
+                        .into_response();
+                }
             }
-        };
-
-        tokio::spawn(async move {
-            while audio_sender.read_rtcp().await.is_ok() {}
-        });
+        }
     }
 
     let cleanup_once = Arc::new(AtomicBool::new(false));
@@ -610,24 +701,26 @@ async fn webrtc_session(
         let source_for_channels = source_id.clone();
         let owned_ports_for_channels = owned_ports.clone();
         let cleanup_for_channels = cleanup_once.clone();
-        let video_mode_for_channels = requested_video_mode;
+        let requested_transport_for_channels = requested_transport;
         peer_connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
             let state_for_channels = state_for_channels.clone();
             let source_for_channels = source_for_channels.clone();
             let owned_ports_for_channels = owned_ports_for_channels.clone();
             let cleanup_for_channels = cleanup_for_channels.clone();
-            let video_mode_for_channels = video_mode_for_channels;
+            let requested_transport_for_channels = requested_transport_for_channels;
             Box::pin(async move {
                 let label = channel.label();
                 if label == "video" {
-                    if video_mode_for_channels == VideoChannelMode::Vp8Track {
+                    if requested_transport_for_channels == WebRtcTransportMode::MediaTracks {
                         return;
                     }
 
-                    let video_rx = match video_mode_for_channels {
-                        VideoChannelMode::Raw => state_for_channels.video_rx.clone(),
-                        VideoChannelMode::Vp8DataChannel => state_for_channels.webrtc_vp8_rx.clone(),
-                        VideoChannelMode::Vp8Track => unreachable!(),
+                    let video_rx = match requested_transport_for_channels {
+                        WebRtcTransportMode::RawDataChannel => state_for_channels.video_rx.clone(),
+                        WebRtcTransportMode::Vp8DataChannel => {
+                            state_for_channels.webrtc_vp8_rx.clone()
+                        }
+                        WebRtcTransportMode::MediaTracks => unreachable!(),
                     };
                     let channel_for_video = channel.clone();
                     channel.on_open(Box::new(move || {
@@ -643,6 +736,9 @@ async fn webrtc_session(
                 }
 
                 if label == "audio" {
+                    if requested_transport_for_channels == WebRtcTransportMode::MediaTracks {
+                        return;
+                    }
                     let audio_rx = state_for_channels.audio_tx.subscribe();
                     let channel_for_audio = channel.clone();
                     channel.on_open(Box::new(move || {
@@ -1048,11 +1144,16 @@ async fn shared_webrtc_pcmu_encoder(
         let bytes_per_frame = decoded.channels as usize * 2;
         for frame_index in 0..decoded.frame_count {
             let sample_offset = decoded.payload_offset + frame_index * bytes_per_frame;
-            let left = i16::from_le_bytes(packet[sample_offset..sample_offset + 2].try_into().unwrap());
+            let left =
+                i16::from_le_bytes(packet[sample_offset..sample_offset + 2].try_into().unwrap());
             let mono = if decoded.channels == 1 {
                 left
             } else {
-                let right = i16::from_le_bytes(packet[sample_offset + 2..sample_offset + 4].try_into().unwrap());
+                let right = i16::from_le_bytes(
+                    packet[sample_offset + 2..sample_offset + 4]
+                        .try_into()
+                        .unwrap(),
+                );
                 ((left as i32 + right as i32) / 2) as i16
             };
             pending_mono.push(mono);
@@ -1080,16 +1181,21 @@ async fn shared_webrtc_pcmu_encoder(
                         ..Default::default()
                     })
                     .await;
-                next_packet_timestamp = next_packet_timestamp.wrapping_add(PCMU_FRAME_SAMPLES as u32);
+                next_packet_timestamp =
+                    next_packet_timestamp.wrapping_add(PCMU_FRAME_SAMPLES as u32);
             }
         }
 
-        let consumed = phase.floor() as usize;
+        let consumed = consumed_resampler_input_samples(phase, pending_mono.len());
         if consumed > 0 {
             pending_mono.drain(..consumed);
             phase -= consumed as f64;
         }
     }
+}
+
+fn consumed_resampler_input_samples(phase: f64, pending_len: usize) -> usize {
+    (phase.floor() as usize).min(pending_len)
 }
 
 async fn rtc_audio_channel_session(
@@ -1931,5 +2037,21 @@ impl InputSessionRegistry {
         let now = Instant::now();
         self.per_port
             .retain(|_, owner| owner.reconnect_until.is_none_or(|until| until > now));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::consumed_resampler_input_samples;
+
+    #[test]
+    fn pcmu_resampler_consumed_samples_never_exceed_pending_buffer() {
+        assert_eq!(consumed_resampler_input_samples(516.0, 512), 512);
+    }
+
+    #[test]
+    fn pcmu_resampler_consumed_samples_preserve_in_range_values() {
+        assert_eq!(consumed_resampler_input_samples(159.9, 512), 159);
+        assert_eq!(consumed_resampler_input_samples(0.0, 512), 0);
     }
 }
