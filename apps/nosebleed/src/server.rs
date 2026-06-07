@@ -863,6 +863,7 @@ async fn webrtc_session(
         .set_remote_description(remote_description)
         .await
     {
+        eprintln!("gstreamer webrtc: failed to set remote description: {err:#}");
         {
             let mut sessions = state
                 .rtc_sessions
@@ -881,6 +882,7 @@ async fn webrtc_session(
     let answer = match peer_connection.create_answer(None).await {
         Ok(answer) => answer,
         Err(err) => {
+            eprintln!("gstreamer webrtc: failed to create answer: {err:#}");
             {
                 let mut sessions = state
                     .rtc_sessions
@@ -899,6 +901,7 @@ async fn webrtc_session(
 
     let mut gather_complete = peer_connection.gathering_complete_promise().await;
     if let Err(err) = peer_connection.set_local_description(answer).await {
+        eprintln!("gstreamer webrtc: failed to set local description: {err:#}");
         {
             let mut sessions = state
                 .rtc_sessions
