@@ -420,7 +420,7 @@ impl GstreamerPipelineSpec {
     fn opus_audio_pipeline() -> String {
         concat!(
             "appsrc name=audio_src is-live=true format=time do-timestamp=false ",
-            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=200000000 ",
+            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=50000000 ",
             "! audioconvert ! audioresample ",
             "! opusenc audio-type=restricted-lowdelay frame-size=20 bitrate=64000 inband-fec=false ",
             "! rtpopuspay pt=111 ",
