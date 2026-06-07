@@ -653,7 +653,7 @@ async fn webrtc_session(
                         .into_response();
                 }
             }
-        }
+        };
     }
 
     let cleanup_once = Arc::new(AtomicBool::new(false));
@@ -1186,16 +1186,27 @@ async fn shared_webrtc_pcmu_encoder(
             }
         }
 
-        let consumed = consumed_resampler_input_samples(phase, pending_mono.len());
-        if consumed > 0 {
-            pending_mono.drain(..consumed);
-            phase -= consumed as f64;
-        }
+        drain_consumed_mono_samples(&mut pending_mono, &mut phase);
     }
 }
 
-fn consumed_resampler_input_samples(phase: f64, pending_len: usize) -> usize {
-    (phase.floor() as usize).min(pending_len)
+fn drain_consumed_mono_samples(pending_mono: &mut Vec<i16>, phase: &mut f64) {
+    if pending_mono.is_empty() {
+        *phase = 0.0;
+        return;
+    }
+
+    let consumed = phase.floor().max(0.0) as usize;
+    if consumed == 0 {
+        return;
+    }
+
+    let drained = consumed.min(pending_mono.len());
+    pending_mono.drain(..drained);
+    *phase -= drained as f64;
+    if *phase < 0.0 {
+        *phase = 0.0;
+    }
 }
 
 async fn rtc_audio_channel_session(
@@ -1869,6 +1880,7 @@ fn process_input_payload(
         ClientMessage::Command {
             command,
             port,
+            slot,
             sequence,
         } => {
             if !allow_input {
@@ -1883,6 +1895,7 @@ fn process_input_payload(
                 };
             }
 
+            let slot = slot.unwrap_or(0);
             match command {
                 ClientCommand::InsertCoin => {
                     state
@@ -1902,6 +1915,40 @@ fn process_input_payload(
                         message: format!("reset failed: {err:#}"),
                     },
                 },
+                ClientCommand::SaveState => {
+                    if slot == 0 {
+                        return ServerMessage::Error {
+                            message: "save state requires a slot number".to_string(),
+                        };
+                    }
+
+                    match state.session_manager.request_save_state(slot) {
+                        Ok(()) => ServerMessage::Ack {
+                            sequence,
+                            server_time_ms: now_unix_ms(),
+                        },
+                        Err(err) => ServerMessage::Error {
+                            message: format!("save state failed: {err:#}"),
+                        },
+                    }
+                }
+                ClientCommand::LoadState => {
+                    if slot == 0 {
+                        return ServerMessage::Error {
+                            message: "load state requires a slot number".to_string(),
+                        };
+                    }
+
+                    match state.session_manager.request_load_state(slot) {
+                        Ok(()) => ServerMessage::Ack {
+                            sequence,
+                            server_time_ms: now_unix_ms(),
+                        },
+                        Err(err) => ServerMessage::Error {
+                            message: format!("load state failed: {err:#}"),
+                        },
+                    }
+                }
             }
         }
         ClientMessage::Ping { client_time_ms } => {
@@ -2042,16 +2089,27 @@ impl InputSessionRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::consumed_resampler_input_samples;
+    use super::*;
 
     #[test]
-    fn pcmu_resampler_consumed_samples_never_exceed_pending_buffer() {
-        assert_eq!(consumed_resampler_input_samples(516.0, 512), 512);
+    fn drain_consumed_mono_samples_clamps_to_available_input() {
+        let mut pending_mono = vec![1i16; 512];
+        let mut phase = 516.0;
+
+        drain_consumed_mono_samples(&mut pending_mono, &mut phase);
+
+        assert!(pending_mono.is_empty());
+        assert_eq!(phase, 4.0);
     }
 
     #[test]
-    fn pcmu_resampler_consumed_samples_preserve_in_range_values() {
-        assert_eq!(consumed_resampler_input_samples(159.9, 512), 159);
-        assert_eq!(consumed_resampler_input_samples(0.0, 512), 0);
+    fn drain_consumed_mono_samples_leaves_partial_buffer_when_phase_is_within_bounds() {
+        let mut pending_mono = vec![1i16; 512];
+        let mut phase = 12.75;
+
+        drain_consumed_mono_samples(&mut pending_mono, &mut phase);
+
+        assert_eq!(pending_mono.len(), 500);
+        assert_eq!(phase, 0.75);
     }
 }

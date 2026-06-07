@@ -210,6 +210,34 @@ impl SessionManager {
         Ok(())
     }
 
+    pub fn request_save_state(&self, slot: u8) -> Result<()> {
+        self.reap_finished_runtime();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let runtime = state
+            .active
+            .as_ref()
+            .ok_or_else(|| anyhow!("no active runtime to save a state from"))?;
+        runtime.control.request_save_state(slot);
+        Ok(())
+    }
+
+    pub fn request_load_state(&self, slot: u8) -> Result<()> {
+        self.reap_finished_runtime();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let runtime = state
+            .active
+            .as_ref()
+            .ok_or_else(|| anyhow!("no active runtime to load a state into"))?;
+        runtime.control.request_load_state(slot);
+        Ok(())
+    }
+
     pub fn shutdown_and_join(&self) -> Result<()> {
         let active = {
             let mut state = self

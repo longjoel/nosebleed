@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_void};
 use std::fs;
 use std::mem::MaybeUninit;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
+use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -15,24 +17,64 @@ use crate::audio::AudioBus;
 use crate::frame::{LatestFrameStore, PixelFormat};
 use crate::input::InputHub;
 
+#[derive(Debug, Clone)]
+pub enum RuntimeCommand {
+    Reset,
+    SaveState { slot: u8 },
+    LoadState { slot: u8 },
+}
+
 #[derive(Debug, Default)]
 pub struct RuntimeControl {
-    reset_requested: AtomicBool,
+    commands: std::sync::Mutex<Vec<RuntimeCommand>>,
 }
 
 impl RuntimeControl {
     pub fn request_reset(&self) {
-        self.reset_requested.store(true, Ordering::Relaxed);
+        self.request_command(RuntimeCommand::Reset);
     }
 
-    pub fn take_reset_requested(&self) -> bool {
-        self.reset_requested.swap(false, Ordering::Relaxed)
+    pub fn request_save_state(&self, slot: u8) {
+        self.request_command(RuntimeCommand::SaveState { slot });
+    }
+
+    pub fn request_load_state(&self, slot: u8) {
+        self.request_command(RuntimeCommand::LoadState { slot });
+    }
+
+    pub fn take_commands(&self) -> Vec<RuntimeCommand> {
+        let mut commands = self
+            .commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *commands)
+    }
+
+    fn request_command(&self, command: RuntimeCommand) {
+        self.commands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(command);
     }
 }
 
 const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: u32 = 10;
+const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: u32 = 9;
+const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: u32 = 31;
+const RETRO_ENVIRONMENT_GET_VARIABLE: u32 = 15;
+const RETRO_ENVIRONMENT_SET_VARIABLES: u32 = 16;
+const RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: u32 = 17;
+const RETRO_ENVIRONMENT_GET_LANGUAGE: u32 = 39;
+const RETRO_ENVIRONMENT_SET_CORE_OPTIONS: u32 = 53;
+const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: u32 = 54;
+const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: u32 = 55;
+const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: u32 = 67;
+const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: u32 = 68;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ANALOG: u32 = 5;
+const RETRO_LANGUAGE_ENGLISH: u32 = 0;
+const RETRO_MEMORY_SAVE_RAM: u32 = 0;
+const RETRO_NUM_CORE_OPTION_VALUES_MAX: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct LibretroRunConfig {
@@ -61,6 +103,11 @@ type RetroRun = unsafe extern "C" fn();
 type RetroReset = unsafe extern "C" fn();
 type RetroLoadGame = unsafe extern "C" fn(game: *const RetroGameInfo) -> bool;
 type RetroUnloadGame = unsafe extern "C" fn();
+type RetroGetMemoryData = unsafe extern "C" fn(id: u32) -> *mut c_void;
+type RetroGetMemorySize = unsafe extern "C" fn(id: u32) -> usize;
+type RetroSerializeSize = unsafe extern "C" fn() -> usize;
+type RetroSerialize = unsafe extern "C" fn(data: *mut c_void, size: usize) -> bool;
+type RetroUnserialize = unsafe extern "C" fn(data: *const c_void, size: usize) -> bool;
 type RetroGetSystemInfo = unsafe extern "C" fn(info: *mut RetroSystemInfo);
 type RetroGetSystemAvInfo = unsafe extern "C" fn(info: *mut RetroSystemAvInfo);
 
@@ -115,11 +162,72 @@ struct RetroSystemInfo {
     block_extract: bool,
 }
 
+#[repr(C)]
+struct RetroVariable {
+    key: *const c_char,
+    value: *const c_char,
+}
+
+#[repr(C)]
+struct RetroCoreOptionValue {
+    value: *const c_char,
+    label: *const c_char,
+}
+
+#[repr(C)]
+struct RetroCoreOptionDefinition {
+    key: *const c_char,
+    desc: *const c_char,
+    info: *const c_char,
+    values: [RetroCoreOptionValue; RETRO_NUM_CORE_OPTION_VALUES_MAX],
+    default_value: *const c_char,
+}
+
+#[repr(C)]
+struct RetroCoreOptionsIntl {
+    us: *const RetroCoreOptionDefinition,
+    local: *const RetroCoreOptionDefinition,
+}
+
+#[repr(C)]
+struct RetroCoreOptionV2Category {
+    key: *const c_char,
+    desc: *const c_char,
+    info: *const c_char,
+}
+
+#[repr(C)]
+struct RetroCoreOptionV2Definition {
+    key: *const c_char,
+    desc: *const c_char,
+    desc_categorized: *const c_char,
+    info: *const c_char,
+    info_categorized: *const c_char,
+    category_key: *const c_char,
+    values: [RetroCoreOptionValue; RETRO_NUM_CORE_OPTION_VALUES_MAX],
+    default_value: *const c_char,
+}
+
+#[repr(C)]
+struct RetroCoreOptionsV2 {
+    categories: *const RetroCoreOptionV2Category,
+    definitions: *const RetroCoreOptionV2Definition,
+}
+
+#[repr(C)]
+struct RetroCoreOptionsV2Intl {
+    us: *const RetroCoreOptionsV2,
+    local: *const RetroCoreOptionsV2,
+}
+
+#[repr(C)]
+struct RetroCoreOptionDisplay {
+    key: *const c_char,
+    visible: bool,
+}
+
 #[derive(Debug, Clone)]
 struct CoreLoadHints {
-    library_name: String,
-    library_version: String,
-    valid_extensions: String,
     need_fullpath: bool,
     block_extract: bool,
 }
@@ -127,6 +235,331 @@ struct CoreLoadHints {
 fn callback_context() -> &'static Mutex<CallbackContext> {
     static CONTEXT: OnceLock<Mutex<CallbackContext>> = OnceLock::new();
     CONTEXT.get_or_init(|| Mutex::new(CallbackContext::default()))
+}
+
+fn system_directory_cstr() -> &'static CString {
+    static SYSTEM_DIR: OnceLock<CString> = OnceLock::new();
+    SYSTEM_DIR.get_or_init(|| {
+        let path = std::env::var("NOSEBLEED_SYSTEM_DIR")
+            .unwrap_or_else(|_| "/srv/storage/games/system".to_string());
+        let path = PathBuf::from(path);
+        let _ = fs::create_dir_all(&path);
+        CString::new(path.to_string_lossy().as_bytes())
+            .expect("system dir path should not contain nulls")
+    })
+}
+
+fn save_directory_path() -> PathBuf {
+    let path = std::env::var("NOSEBLEED_SAVE_DIR")
+        .unwrap_or_else(|_| "/srv/storage/games/saves".to_string());
+    PathBuf::from(path)
+}
+
+fn save_directory_cstr() -> &'static CString {
+    static SAVE_DIR: OnceLock<CString> = OnceLock::new();
+    SAVE_DIR.get_or_init(|| {
+        let path = save_directory_path();
+        let _ = fs::create_dir_all(&path);
+        CString::new(path.to_string_lossy().as_bytes())
+            .expect("save dir path should not contain nulls")
+    })
+}
+
+fn log_save_directory_once(path: &Path) {
+    static LOGGED: OnceLock<()> = OnceLock::new();
+    LOGGED.get_or_init(|| {
+        eprintln!("save directory configured: {}", path.display());
+    });
+}
+
+fn summarize_save_directory(path: &Path) -> String {
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = fs::read_dir(path) {
+        for entry in read_dir.flatten() {
+            let entry_path = entry.path();
+            if !entry_path.is_file() {
+                continue;
+            }
+
+            let Some(ext) = entry_path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !matches!(ext.to_ascii_lowercase().as_str(), "sav" | "srm" | "ram") {
+                continue;
+            }
+
+            let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            entries.push(format!(
+                "{} ({} bytes)",
+                entry.file_name().to_string_lossy(),
+                size
+            ));
+        }
+    }
+
+    entries.sort();
+    if entries.is_empty() {
+        "<empty>".to_string()
+    } else {
+        entries.join(", ")
+    }
+}
+
+fn start_save_directory_watch(path: PathBuf) {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        let watch_path = path.clone();
+        let _ = thread::Builder::new()
+            .name("nosebleed-save-watch".to_string())
+            .spawn(move || {
+                let mut last_snapshot = String::new();
+                loop {
+                    let snapshot = summarize_save_directory(&watch_path);
+                    if snapshot != last_snapshot {
+                        eprintln!(
+                            "save directory snapshot: {} => {}",
+                            watch_path.display(),
+                            snapshot
+                        );
+                        last_snapshot = snapshot;
+                    }
+                    thread::sleep(Duration::from_secs(5));
+                }
+            });
+    });
+}
+
+fn save_snapshot_path(save_dir: &Path, content_path: &Path) -> Option<PathBuf> {
+    let stem = content_path.file_stem()?.to_string_lossy().trim().to_string();
+    if stem.is_empty() {
+        return None;
+    }
+
+    Some(save_dir.join(stem).with_extension("srm"))
+}
+
+fn sync_save_ram_to_disk(
+    save_dir: &Path,
+    content_path: &Path,
+    get_memory_data: RetroGetMemoryData,
+    get_memory_size: RetroGetMemorySize,
+) -> Result<bool> {
+    let Some(snapshot_path) = save_snapshot_path(save_dir, content_path) else {
+        return Ok(false);
+    };
+
+    let size = unsafe { get_memory_size(RETRO_MEMORY_SAVE_RAM) };
+    if size == 0 {
+        return Ok(false);
+    }
+
+    let data_ptr = unsafe { get_memory_data(RETRO_MEMORY_SAVE_RAM) };
+    if data_ptr.is_null() {
+        return Ok(false);
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(data_ptr as *const u8, size) };
+    if bytes.is_empty() {
+        return Ok(false);
+    }
+
+    if let Ok(existing) = fs::read(&snapshot_path) {
+        if existing == bytes {
+            return Ok(false);
+        }
+    }
+
+    if let Some(parent) = snapshot_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create save directory {}", parent.display()))?;
+    }
+
+    fs::write(&snapshot_path, bytes)
+        .with_context(|| format!("failed to write save RAM snapshot to {}", snapshot_path.display()))?;
+    Ok(true)
+}
+
+fn state_snapshot_path(save_dir: &Path, content_path: &Path, slot: u8) -> Option<PathBuf> {
+    let stem = content_path.file_stem()?.to_string_lossy().trim().to_string();
+    if stem.is_empty() {
+        return None;
+    }
+
+    let slot = slot.max(1);
+    Some(save_dir.join("states").join(stem).join(format!("slot-{slot:02}.state")))
+}
+
+fn sync_state_to_disk(
+    save_dir: &Path,
+    content_path: &Path,
+    slot: u8,
+    serialize_size: RetroSerializeSize,
+    serialize: RetroSerialize,
+) -> Result<bool> {
+    let Some(state_path) = state_snapshot_path(save_dir, content_path, slot) else {
+        return Ok(false);
+    };
+
+    let size = unsafe { serialize_size() };
+    if size == 0 {
+        return Ok(false);
+    }
+
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create save state directory {}", parent.display()))?;
+    }
+
+    let mut buffer = vec![0u8; size];
+    let ok = unsafe { serialize(buffer.as_mut_ptr() as *mut c_void, size) };
+    if !ok {
+        return Ok(false);
+    }
+
+    fs::write(&state_path, buffer)
+        .with_context(|| format!("failed to write save state snapshot to {}", state_path.display()))?;
+    Ok(true)
+}
+
+fn restore_state_from_disk(
+    save_dir: &Path,
+    content_path: &Path,
+    slot: u8,
+    unserialize: RetroUnserialize,
+) -> Result<bool> {
+    let Some(state_path) = state_snapshot_path(save_dir, content_path, slot) else {
+        return Ok(false);
+    };
+
+    let Ok(bytes) = fs::read(&state_path) else {
+        return Ok(false);
+    };
+    if bytes.is_empty() {
+        return Ok(false);
+    }
+
+    let ok = unsafe { unserialize(bytes.as_ptr() as *const c_void, bytes.len()) };
+    if !ok {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+fn c_string_from_ptr(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    unsafe {
+        std::ffi::CStr::from_ptr(ptr)
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+}
+
+fn parse_core_option_default(definition: &str) -> Option<String> {
+    let (_, values) = definition.split_once(';')?;
+    values
+        .split('|')
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn core_option_defaults() -> &'static Mutex<HashMap<String, CString>> {
+    static CORE_OPTION_DEFAULTS: OnceLock<Mutex<HashMap<String, CString>>> = OnceLock::new();
+    CORE_OPTION_DEFAULTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn set_core_option_default(key: String, default_value: String) {
+    let override_value = match key.as_str() {
+        "mupen64plus-rdp-plugin" => Some("angrylion"),
+        "mupen64plus-rsp-plugin" => Some("cxd4"),
+        _ => None,
+    };
+    let chosen_value = override_value.unwrap_or(default_value.as_str());
+
+    if let Ok(value) = CString::new(chosen_value) {
+        core_option_defaults()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, value);
+    }
+}
+
+unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) {
+    let mut defaults = core_option_defaults()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    defaults.clear();
+
+    loop {
+        let variable = &*current;
+        if variable.key.is_null() {
+            break;
+        }
+
+        if let (Some(key), Some(definition)) = (
+            c_string_from_ptr(variable.key),
+            c_string_from_ptr(variable.value),
+        ) {
+            if let Some(default_value) = parse_core_option_default(&definition) {
+                if let Ok(value) = CString::new(default_value) {
+                    defaults.insert(key, value);
+                }
+            }
+        }
+
+        current = current.add(1);
+    }
+}
+
+unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDefinition) {
+    core_option_defaults()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+
+    loop {
+        let definition = &*current;
+        if definition.key.is_null() {
+            break;
+        }
+
+        if let (Some(key), Some(default_value)) = (
+            c_string_from_ptr(definition.key),
+            c_string_from_ptr(definition.default_value),
+        ) {
+            set_core_option_default(key, default_value);
+        }
+
+        current = current.add(1);
+    }
+}
+
+unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOptionV2Definition) {
+    core_option_defaults()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+
+    loop {
+        let definition = &*current;
+        if definition.key.is_null() {
+            break;
+        }
+
+        if let (Some(key), Some(default_value)) = (
+            c_string_from_ptr(definition.key),
+            c_string_from_ptr(definition.default_value),
+        ) {
+            set_core_option_default(key, default_value);
+        }
+
+        current = current.add(1);
+    }
 }
 
 pub fn run_libretro(
@@ -173,6 +606,16 @@ unsafe fn run_libretro_unsafe(
     let retro_load_game = unsafe { load_symbol::<RetroLoadGame>(&library, b"retro_load_game\0") }?;
     let retro_unload_game =
         unsafe { load_symbol::<RetroUnloadGame>(&library, b"retro_unload_game\0") }?;
+    let retro_get_memory_data =
+        unsafe { load_optional_symbol::<RetroGetMemoryData>(&library, b"retro_get_memory_data\0") };
+    let retro_get_memory_size =
+        unsafe { load_optional_symbol::<RetroGetMemorySize>(&library, b"retro_get_memory_size\0") };
+    let retro_serialize_size =
+        unsafe { load_optional_symbol::<RetroSerializeSize>(&library, b"retro_serialize_size\0") };
+    let retro_serialize =
+        unsafe { load_optional_symbol::<RetroSerialize>(&library, b"retro_serialize\0") };
+    let retro_unserialize =
+        unsafe { load_optional_symbol::<RetroUnserialize>(&library, b"retro_unserialize\0") };
 
     let retro_get_system_info =
         unsafe { load_optional_symbol::<RetroGetSystemInfo>(&library, b"retro_get_system_info\0") };
@@ -205,18 +648,11 @@ unsafe fn run_libretro_unsafe(
         let mut info = MaybeUninit::<RetroSystemInfo>::zeroed();
         unsafe { get_info(info.as_mut_ptr()) };
         let info = unsafe { info.assume_init() };
-        let library_name = c_string_or_unknown(info.library_name);
-        let library_version = c_string_or_unknown(info.library_version);
-        let valid_extensions = c_string_or_unknown(info.valid_extensions);
-        eprintln!("Loaded core: {} ({})", library_name, library_version);
         eprintln!(
-            "Core content hints: valid_extensions={} need_fullpath={} block_extract={}",
-            valid_extensions, info.need_fullpath, info.block_extract
+            "Loaded core metadata: need_fullpath={} block_extract={}",
+            info.need_fullpath, info.block_extract
         );
         core_hints = Some(CoreLoadHints {
-            library_name,
-            library_version,
-            valid_extensions,
             need_fullpath: info.need_fullpath,
             block_extract: info.block_extract,
         });
@@ -325,15 +761,62 @@ unsafe fn run_libretro_unsafe(
 
     let frame_interval = Duration::from_secs_f64((1.0 / fps as f64).max(0.001));
     let mut next_frame = Instant::now();
+    let save_sync_interval = Duration::from_secs(5);
+    let mut next_save_sync = Instant::now() + save_sync_interval;
 
     while !shutdown.load(Ordering::Relaxed) {
-        if control.take_reset_requested() {
-            if let Some(retro_reset) = retro_reset {
-                unsafe { retro_reset() };
-            } else {
-                eprintln!("reset requested, but core does not expose retro_reset");
+        for command in control.take_commands() {
+            match command {
+                RuntimeCommand::Reset => {
+                    if let Some(retro_reset) = retro_reset {
+                        unsafe { retro_reset() };
+                    } else {
+                        eprintln!("reset requested, but core does not expose retro_reset");
+                    }
+                }
+                RuntimeCommand::SaveState { slot } => {
+                    let Some(content_path) = config.content_path.as_deref() else {
+                        eprintln!("save state requested for slot {slot}, but no content path is configured");
+                        continue;
+                    };
+
+                    let Some(serialize_size) = retro_serialize_size else {
+                        eprintln!("save state requested for slot {slot}, but core does not expose retro_serialize_size");
+                        continue;
+                    };
+                    let Some(serialize) = retro_serialize else {
+                        eprintln!("save state requested for slot {slot}, but core does not expose retro_serialize");
+                        continue;
+                    };
+
+                    let save_dir = save_directory_path();
+                    match sync_state_to_disk(&save_dir, content_path, slot, serialize_size, serialize) {
+                        Ok(true) => eprintln!("save state slot {slot} written to disk"),
+                        Ok(false) => eprintln!("save state slot {slot} produced no snapshot"),
+                        Err(err) => eprintln!("save state sync failed for slot {slot}: {err:#}"),
+                    }
+                }
+                RuntimeCommand::LoadState { slot } => {
+                    let Some(content_path) = config.content_path.as_deref() else {
+                        eprintln!("load state requested for slot {slot}, but no content path is configured");
+                        continue;
+                    };
+
+                    let Some(unserialize) = retro_unserialize else {
+                        eprintln!("load state requested for slot {slot}, but core does not expose retro_unserialize");
+                        continue;
+                    };
+
+                    let save_dir = save_directory_path();
+                    match restore_state_from_disk(&save_dir, content_path, slot, unserialize) {
+                        Ok(true) => eprintln!("save state slot {slot} restored from disk"),
+                        Ok(false) => eprintln!("save state slot {slot} not restored"),
+                        Err(err) => eprintln!("save state restore failed for slot {slot}: {err:#}"),
+                    }
+                }
             }
         }
+
         unsafe { retro_run() };
 
         next_frame += frame_interval;
@@ -342,6 +825,23 @@ unsafe fn run_libretro_unsafe(
             thread::sleep(next_frame - now);
         } else {
             next_frame = now;
+        }
+
+        let now = Instant::now();
+        if now >= next_save_sync {
+            if let (Some(get_memory_data), Some(get_memory_size), Some(content_path)) = (
+                retro_get_memory_data,
+                retro_get_memory_size,
+                config.content_path.as_deref(),
+            ) {
+                let save_dir = save_directory_path();
+                if let Err(err) =
+                    sync_save_ram_to_disk(&save_dir, content_path, get_memory_data, get_memory_size)
+                {
+                    eprintln!("save RAM sync failed: {err:#}");
+                }
+            }
+            next_save_sync = now + save_sync_interval;
         }
     }
 
@@ -381,6 +881,140 @@ where
 
 unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
     match cmd {
+        RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY => {
+            if data.is_null() {
+                return false;
+            }
+
+            unsafe {
+                *(data as *mut *const c_char) = system_directory_cstr().as_ptr();
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY => {
+            if data.is_null() {
+                return false;
+            }
+
+            let save_dir = save_directory_path();
+            let _ = fs::create_dir_all(&save_dir);
+            log_save_directory_once(&save_dir);
+            start_save_directory_watch(save_dir.clone());
+            eprintln!("libretro GET_SAVE_DIRECTORY -> {}", save_dir.display());
+
+            unsafe {
+                *(data as *mut *const c_char) = save_directory_cstr().as_ptr();
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_SET_VARIABLES => {
+            if data.is_null() {
+                return false;
+            }
+
+            unsafe { collect_legacy_core_options(data as *const RetroVariable) };
+            true
+        }
+        RETRO_ENVIRONMENT_SET_CORE_OPTIONS => {
+            if data.is_null() {
+                return false;
+            }
+
+            unsafe { collect_core_option_definitions(data as *const RetroCoreOptionDefinition) };
+            true
+        }
+        RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL => {
+            if data.is_null() {
+                return false;
+            }
+
+            let options = unsafe { &*(data as *const RetroCoreOptionsIntl) };
+            if options.us.is_null() {
+                return false;
+            }
+
+            unsafe { collect_core_option_definitions(options.us) };
+            true
+        }
+        RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2 => {
+            if data.is_null() {
+                return false;
+            }
+
+            let options = unsafe { &*(data as *const RetroCoreOptionsV2) };
+            if options.definitions.is_null() {
+                return false;
+            }
+
+            unsafe { collect_core_option_definitions_v2(options.definitions) };
+            true
+        }
+        RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL => {
+            if data.is_null() {
+                return false;
+            }
+
+            let options = unsafe { &*(data as *const RetroCoreOptionsV2Intl) };
+            if options.us.is_null() {
+                return false;
+            }
+
+            let us = unsafe { &*options.us };
+            if us.definitions.is_null() {
+                return false;
+            }
+
+            unsafe { collect_core_option_definitions_v2(us.definitions) };
+            true
+        }
+        RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY => {
+            if data.is_null() {
+                return false;
+            }
+
+            let display = unsafe { &*(data as *const RetroCoreOptionDisplay) };
+            !display.key.is_null()
+        }
+        RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE => {
+            if data.is_null() {
+                return false;
+            }
+
+            unsafe {
+                *(data as *mut bool) = false;
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_GET_LANGUAGE => {
+            if data.is_null() {
+                return false;
+            }
+
+            unsafe {
+                *(data as *mut u32) = RETRO_LANGUAGE_ENGLISH;
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_GET_VARIABLE => {
+            if data.is_null() {
+                return false;
+            }
+
+            let variable = unsafe { &mut *(data as *mut RetroVariable) };
+            let Some(key) = c_string_from_ptr(variable.key) else {
+                return false;
+            };
+
+            let defaults = core_option_defaults()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(value) = defaults.get(&key) else {
+                return false;
+            };
+
+            variable.value = value.as_ptr();
+            true
+        }
         RETRO_ENVIRONMENT_SET_PIXEL_FORMAT => {
             if data.is_null() {
                 return false;
@@ -494,20 +1128,6 @@ unsafe extern "C" fn input_state_callback(port: u32, device: u32, index: u32, id
     }
 }
 
-fn c_string_or_unknown(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        return "unknown".to_string();
-    }
-
-    // SAFETY: pointer is owned by the loaded core and expected to be valid C-string.
-    unsafe {
-        std::ffi::CStr::from_ptr(ptr)
-            .to_str()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    }
-}
-
 fn log_content_file_details(content_path: &PathBuf) -> Result<()> {
     let canonical = fs::canonicalize(content_path).with_context(|| {
         format!(
@@ -537,31 +1157,15 @@ fn log_content_file_details(content_path: &PathBuf) -> Result<()> {
 
 fn log_core_rejection_hints(hints: &CoreLoadHints, content_path: &PathBuf) {
     eprintln!(
-        "load rejection context: core={} version={} valid_extensions={} need_fullpath={} block_extract={}",
-        hints.library_name,
-        hints.library_version,
-        hints.valid_extensions,
-        hints.need_fullpath,
-        hints.block_extract
+        "load rejection context: need_fullpath={} block_extract={}",
+        hints.need_fullpath, hints.block_extract
     );
 
-    if let Some(extension) = content_path.extension().and_then(|value| value.to_str()) {
-        let ext = extension.to_ascii_lowercase();
-        if !hints.valid_extensions.eq_ignore_ascii_case("unknown") {
-            let allowed = hints
-                .valid_extensions
-                .split('|')
-                .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>();
-            if !allowed.is_empty() && !allowed.iter().any(|value| value == &ext) {
-                eprintln!(
-                    "content extension mismatch: got .{} but core declares [{}]",
-                    ext, hints.valid_extensions
-                );
-            }
-        }
-    } else {
+    if content_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none()
+    {
         eprintln!("content has no file extension; core may require a known extension");
     }
 }

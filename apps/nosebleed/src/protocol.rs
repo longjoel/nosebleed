@@ -18,6 +18,8 @@ const AUDIO_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 1 + 1 + 4 + 4;
 pub enum ClientCommand {
     Reset,
     InsertCoin,
+    SaveState,
+    LoadState,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +37,8 @@ pub enum ClientMessage {
         command: ClientCommand,
         #[serde(default)]
         port: u32,
+        #[serde(default)]
+        slot: Option<u8>,
         #[serde(default)]
         sequence: Option<u64>,
     },
@@ -62,6 +66,42 @@ pub fn parse_client_message(raw: &str) -> Result<ClientMessage> {
 
 pub fn serialize_server_message(message: &ServerMessage) -> Result<String> {
     serde_json::to_string(message).context("failed to serialize server message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_client_command_supports_save_and_load_state_slots() {
+        let save_message = parse_client_message(
+            r#"{"type":"command","command":"save_state","port":0,"slot":3,"sequence":12}"#,
+        )
+        .expect("save state command should parse");
+        match save_message {
+            ClientMessage::Command { command, port, slot, sequence } => {
+                assert_eq!(command, ClientCommand::SaveState);
+                assert_eq!(port, 0);
+                assert_eq!(slot, Some(3));
+                assert_eq!(sequence, Some(12));
+            }
+            _ => panic!("expected command message"),
+        }
+
+        let load_message = parse_client_message(
+            r#"{"type":"command","command":"load_state","port":0,"slot":5,"sequence":13}"#,
+        )
+        .expect("load state command should parse");
+        match load_message {
+            ClientMessage::Command { command, port, slot, sequence } => {
+                assert_eq!(command, ClientCommand::LoadState);
+                assert_eq!(port, 0);
+                assert_eq!(slot, Some(5));
+                assert_eq!(sequence, Some(13));
+            }
+            _ => panic!("expected command message"),
+        }
+    }
 }
 
 pub fn encode_frame_packet(frame: &VideoFrame) -> Arc<[u8]> {
