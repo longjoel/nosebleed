@@ -37,9 +37,155 @@ impl Default for MediaBackend {
     }
 }
 
+// ── Video codec / encoder configuration ────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    H264,
+    Vp8,
+    Vp9,
+    Av1,
+}
+
+impl VideoCodec {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::Vp8 => "vp8",
+            Self::Vp9 => "vp9",
+            Self::Av1 => "av1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoEncoderSelection {
+    Auto,
+    Software,
+    Nvenc,
+    Qsv,
+    Vaapi,
+    V4l2,
+    X264,
+    Vp8,
+}
+
+impl VideoEncoderSelection {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "software" => Ok(Self::Software),
+            "nvenc" => Ok(Self::Nvenc),
+            "qsv" => Ok(Self::Qsv),
+            "vaapi" => Ok(Self::Vaapi),
+            "v4l2" => Ok(Self::V4l2),
+            "x264" => Ok(Self::X264),
+            "vp8" => Ok(Self::Vp8),
+            other => Err(anyhow!("unsupported video encoder '{other}'")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Software => "software",
+            Self::Nvenc => "nvenc",
+            Self::Qsv => "qsv",
+            Self::Vaapi => "vaapi",
+            Self::V4l2 => "v4l2",
+            Self::X264 => "x264",
+            Self::Vp8 => "vp8",
+        }
+    }
+
+    pub fn is_hardware(self) -> bool {
+        matches!(self, Self::Nvenc | Self::Qsv | Self::Vaapi | Self::V4l2)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
+pub struct VideoEncoderConfig {
+    pub codec: VideoCodec,
+    pub encoder: VideoEncoderSelection,
+    pub bitrate_kbps: u32,
+    pub keyframe_interval: u32,
+    pub low_latency: bool,
+}
+
+impl Default for VideoEncoderConfig {
+    fn default() -> Self {
+        Self {
+            codec: VideoCodec::H264,
+            encoder: VideoEncoderSelection::Auto,
+            bitrate_kbps: 2500,
+            keyframe_interval: 60,
+            low_latency: true,
+        }
+    }
+}
+
+impl VideoEncoderConfig {
+    const CODEC_ENV: &str = "NOSEBLEED_VIDEO_CODEC";
+    const ENCODER_ENV: &str = "NOSEBLEED_VIDEO_ENCODER";
+    const BITRATE_ENV: &str = "NOSEBLEED_VIDEO_BITRATE_KBPS";
+    const KEYFRAME_ENV: &str = "NOSEBLEED_VIDEO_KEYFRAME_INTERVAL";
+    const LOW_LATENCY_ENV: &str = "NOSEBLEED_VIDEO_LOW_LATENCY";
+
+    pub fn from_env(codec_override: Option<&str>, encoder_override: Option<&str>) -> Result<Self> {
+        let mut config = Self::default();
+
+        let codec_raw = codec_override.map(|s| s.to_owned())
+            .or_else(|| env::var(Self::CODEC_ENV).ok());
+        if let Some(ref raw) = codec_raw {
+            config.codec = match raw.trim().to_ascii_lowercase().as_str() {
+                "h264" => VideoCodec::H264,
+                "vp8" => VideoCodec::Vp8,
+                "vp9" => VideoCodec::Vp9,
+                "av1" => VideoCodec::Av1,
+                "auto" => config.codec,
+                other => return Err(anyhow!("unsupported video codec '{other}'")),
+            };
+        }
+
+        let encoder_raw = encoder_override.map(|s| s.to_owned())
+            .or_else(|| env::var(Self::ENCODER_ENV).ok());
+        if let Some(ref raw) = encoder_raw {
+            config.encoder = VideoEncoderSelection::parse(raw)?;
+        }
+
+        if let Ok(raw) = env::var(Self::BITRATE_ENV) {
+            config.bitrate_kbps = raw.parse::<u32>().unwrap_or(config.bitrate_kbps).max(100);
+        }
+        if let Ok(raw) = env::var(Self::KEYFRAME_ENV) {
+            config.keyframe_interval = raw.parse::<u32>().unwrap_or(config.keyframe_interval).max(1);
+        }
+        if let Ok(raw) = env::var(Self::LOW_LATENCY_ENV) {
+            config.low_latency = !matches!(raw.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off");
+        }
+
+        Ok(config)
+    }
+}
+
+// ── Encoder capability probe result ────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EncoderCandidate {
+    pub element: &'static str,
+    pub codec: &'static str,
+    pub hardware: bool,
+    pub usable: bool,
+    pub skip_reason: Option<String>,
+}
+
+// ── GStreamer pipeline specs ───────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
 pub struct MediaConfig {
     pub selected_backend: MediaBackend,
+    pub video_encoder: VideoEncoderConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +196,12 @@ pub enum WebRtcTransportMode {
 }
 
 impl MediaConfig {
-    pub fn from_sources(cli_backend: Option<&str>, file_backend: Option<&str>) -> Result<Self> {
+    pub fn from_sources(
+        cli_backend: Option<&str>,
+        file_backend: Option<&str>,
+        codec_override: Option<&str>,
+        encoder_override: Option<&str>,
+    ) -> Result<Self> {
         let selected_backend = if let Some(raw) = cli_backend {
             MediaBackend::parse(raw)?
         } else if let Some(raw) = env::var_os(MediaBackend::ENV_VAR) {
@@ -61,10 +212,18 @@ impl MediaConfig {
             MediaBackend::Legacy
         };
 
-        Ok(Self { selected_backend })
+        let video_encoder = VideoEncoderConfig::from_env(codec_override, encoder_override)?;
+
+        Ok(Self {
+            selected_backend,
+            video_encoder,
+        })
     }
 
-    pub fn select_webrtc_transport(&self, requested_video_mode: Option<&str>) -> WebRtcTransportMode {
+    pub fn select_webrtc_transport(
+        &self,
+        requested_video_mode: Option<&str>,
+    ) -> WebRtcTransportMode {
         match self.selected_backend {
             MediaBackend::Gstreamer => WebRtcTransportMode::MediaTracks,
             MediaBackend::Legacy => match requested_video_mode {
@@ -111,6 +270,7 @@ impl Default for MediaRuntimeStatus {
 pub struct GstreamerPipelineSpec {
     pub video_codec: &'static str,
     pub video_encoder: &'static str,
+    pub hardware: bool,
     pub audio_codec: &'static str,
     pub audio_encoder: &'static str,
     pub video_pipeline: String,
@@ -122,6 +282,7 @@ impl GstreamerPipelineSpec {
         Self {
             video_codec: "vp8",
             video_encoder: "vp8enc",
+            hardware: false,
             audio_codec: "opus",
             audio_encoder: "opusenc",
             video_pipeline: concat!(
@@ -144,7 +305,351 @@ impl GstreamerPipelineSpec {
             .to_string(),
         }
     }
+
+    pub fn h264_nvenc(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
+        let video_pipeline = format!(
+            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+             ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
+             ! videoconvert \
+             ! video/x-raw,format=NV12 \
+             ! nvh264enc bframes=0 rc-lookahead=0 gop-size={kf} bitrate={br} preset=low-latency-hq \
+             ! h264parse config-interval=-1 \
+             ! rtph264pay config-interval=-1 pt=96 \
+             ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
+            kf = keyframe_interval,
+            br = bitrate_kbps,
+        );
+        Self {
+            video_codec: "h264",
+            video_encoder: "nvh264enc",
+            hardware: true,
+            audio_codec: "opus",
+            audio_encoder: "opusenc",
+            video_pipeline,
+            audio_pipeline: Self::opus_audio_pipeline(),
+        }
+    }
+
+    pub fn h264_qsv(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
+        let video_pipeline = format!(
+            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+             ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
+             ! videoconvert \
+             ! video/x-raw,format=NV12 \
+             ! qsvh264enc b-frames=0 gop-size={kf} bitrate={br} \
+             ! h264parse config-interval=-1 \
+             ! rtph264pay config-interval=-1 pt=96 \
+             ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
+            kf = keyframe_interval,
+            br = bitrate_kbps,
+        );
+        Self {
+            video_codec: "h264",
+            video_encoder: "qsvh264enc",
+            hardware: true,
+            audio_codec: "opus",
+            audio_encoder: "opusenc",
+            video_pipeline,
+            audio_pipeline: Self::opus_audio_pipeline(),
+        }
+    }
+
+    pub fn h264_vaapi(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
+        let video_pipeline = format!(
+            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+             ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
+             ! videoconvert \
+             ! video/x-raw,format=NV12 \
+             ! vaapih264enc bitrate={br} keyframe-period={kf} rate-control=cbr \
+             ! h264parse config-interval=-1 \
+             ! rtph264pay config-interval=-1 pt=96 \
+             ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
+            kf = keyframe_interval,
+            br = bitrate_kbps,
+        );
+        Self {
+            video_codec: "h264",
+            video_encoder: "vaapih264enc",
+            hardware: true,
+            audio_codec: "opus",
+            audio_encoder: "opusenc",
+            video_pipeline,
+            audio_pipeline: Self::opus_audio_pipeline(),
+        }
+    }
+
+    pub fn h264_v4l2(bitrate_kbps: u32, _keyframe_interval: u32) -> Self {
+        let video_pipeline = format!(
+            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+             ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
+             ! videoconvert \
+             ! video/x-raw,format=NV12 \
+             ! v4l2h264enc extra-controls=\"encode,bitrate={br},h26x_minimum_qp_value=10\" \
+             ! h264parse config-interval=-1 \
+             ! rtph264pay config-interval=-1 pt=96 \
+             ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
+            br = bitrate_kbps * 1000,
+        );
+        Self {
+            video_codec: "h264",
+            video_encoder: "v4l2h264enc",
+            hardware: true,
+            audio_codec: "opus",
+            audio_encoder: "opusenc",
+            video_pipeline,
+            audio_pipeline: Self::opus_audio_pipeline(),
+        }
+    }
+
+    pub fn h264_x264_software(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
+        let video_pipeline = format!(
+            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+             ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
+             ! videoconvert \
+             ! x264enc tune=zerolatency speed-preset=ultrafast bframes=0 key-int-max={kf} bitrate={br} \
+             ! video/x-h264,profile=baseline \
+             ! h264parse config-interval=-1 \
+             ! rtph264pay config-interval=-1 pt=96 \
+             ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
+            kf = keyframe_interval,
+            br = bitrate_kbps,
+        );
+        Self {
+            video_codec: "h264",
+            video_encoder: "x264enc",
+            hardware: false,
+            audio_codec: "opus",
+            audio_encoder: "opusenc",
+            video_pipeline,
+            audio_pipeline: Self::opus_audio_pipeline(),
+        }
+    }
+
+    fn opus_audio_pipeline() -> String {
+        concat!(
+            "appsrc name=audio_src is-live=true format=time do-timestamp=false ",
+            "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ",
+            "! audioconvert ! audioresample ",
+            "! opusenc audio-type=restricted-lowdelay frame-size=20 bitrate=64000 inband-fec=false ",
+            "! rtpopuspay pt=111 ",
+            "! appsink name=audio_sink sync=false async=false drop=true max-buffers=16 emit-signals=true"
+        )
+        .to_string()
+    }
 }
+
+// ── Encoder selection ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SelectedEncoder {
+    pub spec: GstreamerPipelineSpec,
+    pub candidates: Vec<EncoderCandidate>,
+    pub selection_reason: String,
+}
+
+#[cfg(feature = "media-gstreamer")]
+pub fn select_encoder(
+    config: &VideoEncoderConfig,
+) -> Result<SelectedEncoder> {
+    use gstreamer as gst;
+
+    gst::init().map_err(|err| anyhow!("GStreamer init failed: {err}"))?;
+
+    let has = |name: &str| gst::ElementFactory::find(name).is_some();
+
+    let candidates = build_candidates(has);
+
+    // Explicit encoder override — just try that one
+    if config.encoder != VideoEncoderSelection::Auto {
+        let (element, codec) = match config.encoder {
+            VideoEncoderSelection::Nvenc => ("nvh264enc", "h264"),
+            VideoEncoderSelection::Qsv => ("qsvh264enc", "h264"),
+            VideoEncoderSelection::Vaapi => ("vaapih264enc", "h264"),
+            VideoEncoderSelection::V4l2 => ("v4l2h264enc", "h264"),
+            VideoEncoderSelection::X264 => ("x264enc", "h264"),
+            VideoEncoderSelection::Vp8 => ("vp8enc", "vp8"),
+            VideoEncoderSelection::Software => {
+                // "software" means no hardware encoder, but try x264 first then vp8
+                if has("x264enc") {
+                    ("x264enc", "h264")
+                } else {
+                    ("vp8enc", "vp8")
+                }
+            }
+            VideoEncoderSelection::Auto => unreachable!(),
+        };
+
+        if !has(element) {
+            return Err(anyhow!(
+                "encoder '{element}' requested but GStreamer element not found on this host"
+            ));
+        }
+
+        let spec = build_hardcoded_pipeline(element, codec, config, has)?;
+        return Ok(SelectedEncoder {
+            spec,
+            candidates,
+            selection_reason: format!("explicit encoder override: {element}"),
+        });
+    }
+
+    // Auto-detect: H.264 first, then VP8 fallback
+    // Preference: nvh264enc > qsvh264enc > vaapih264enc > v4l2h264enc > x264enc > vp8enc
+    for (element, codec) in &[
+        ("nvh264enc", "h264"),
+        ("qsvh264enc", "h264"),
+        ("vaapih264enc", "h264"),
+        ("v4l2h264enc", "h264"),
+        ("x264enc", "h264"),
+        ("vp8enc", "vp8"),
+    ] {
+        if *codec == "vp8" && config.codec != VideoCodec::H264 {
+            // If user asked for H264 specifically and we couldn't find any H.264,
+            // fall through to VP8 anyway as last resort
+        } else if *codec == "h264" && config.codec == VideoCodec::Vp8 {
+            continue; // user explicitly wants VP8
+        }
+
+        if !has(element) {
+            continue;
+        }
+
+        let spec = build_hardcoded_pipeline(element, codec, config, has)?;
+        let label = if spec.hardware { "hardware" } else { "software" };
+        return Ok(SelectedEncoder {
+            spec,
+            candidates,
+            selection_reason: format!("auto-detected {label} encoder: {element}"),
+        });
+    }
+
+    Err(anyhow!(
+        "no usable video encoder found; available elements: {:?}",
+        candidates
+            .iter()
+            .filter(|c| c.usable)
+            .map(|c| c.element)
+            .collect::<Vec<_>>()
+    ))
+}
+
+#[cfg(not(feature = "media-gstreamer"))]
+pub fn select_encoder(
+    _config: &VideoEncoderConfig,
+) -> Result<SelectedEncoder> {
+    Err(anyhow!(
+        "binary not built with media-gstreamer feature"
+    ))
+}
+
+#[cfg(feature = "media-gstreamer")]
+fn build_candidates(has: impl Fn(&str) -> bool) -> Vec<EncoderCandidate> {
+    vec![
+        EncoderCandidate {
+            element: "nvh264enc",
+            codec: "h264",
+            hardware: true,
+            usable: has("nvh264enc"),
+            skip_reason: if has("nvh264enc") {
+                None
+            } else {
+                Some("nvh264enc (NVIDIA NVENC) not installed".into())
+            },
+        },
+        EncoderCandidate {
+            element: "qsvh264enc",
+            codec: "h264",
+            hardware: true,
+            usable: has("qsvh264enc"),
+            skip_reason: if has("qsvh264enc") {
+                None
+            } else {
+                Some("qsvh264enc (Intel Quick Sync) not installed".into())
+            },
+        },
+        EncoderCandidate {
+            element: "vaapih264enc",
+            codec: "h264",
+            hardware: true,
+            usable: has("vaapih264enc"),
+            skip_reason: if has("vaapih264enc") {
+                None
+            } else {
+                Some("vaapih264enc (VA-API) not installed".into())
+            },
+        },
+        EncoderCandidate {
+            element: "v4l2h264enc",
+            codec: "h264",
+            hardware: true,
+            usable: has("v4l2h264enc"),
+            skip_reason: if has("v4l2h264enc") {
+                None
+            } else {
+                Some("v4l2h264enc (V4L2) not installed".into())
+            },
+        },
+        EncoderCandidate {
+            element: "x264enc",
+            codec: "h264",
+            hardware: false,
+            usable: has("x264enc"),
+            skip_reason: if has("x264enc") {
+                None
+            } else {
+                Some("x264enc (software H.264) not installed".into())
+            },
+        },
+        EncoderCandidate {
+            element: "vp8enc",
+            codec: "vp8",
+            hardware: false,
+            usable: has("vp8enc"),
+            skip_reason: if has("vp8enc") {
+                None
+            } else {
+                Some("vp8enc (software VP8) not installed".into())
+            },
+        },
+    ]
+}
+
+#[cfg(feature = "media-gstreamer")]
+fn build_hardcoded_pipeline(
+    element: &str,
+    codec: &str,
+    config: &VideoEncoderConfig,
+    _has: impl Fn(&str) -> bool,
+) -> Result<GstreamerPipelineSpec> {
+    match (element, codec) {
+        ("nvh264enc", "h264") => Ok(GstreamerPipelineSpec::h264_nvenc(
+            config.bitrate_kbps,
+            config.keyframe_interval,
+        )),
+        ("qsvh264enc", "h264") => Ok(GstreamerPipelineSpec::h264_qsv(
+            config.bitrate_kbps,
+            config.keyframe_interval,
+        )),
+        ("vaapih264enc", "h264") => Ok(GstreamerPipelineSpec::h264_vaapi(
+            config.bitrate_kbps,
+            config.keyframe_interval,
+        )),
+        ("v4l2h264enc", "h264") => Ok(GstreamerPipelineSpec::h264_v4l2(
+            config.bitrate_kbps,
+            config.keyframe_interval,
+        )),
+        ("x264enc", "h264") => Ok(GstreamerPipelineSpec::h264_x264_software(
+            config.bitrate_kbps,
+            config.keyframe_interval,
+        )),
+        ("vp8enc", "vp8") => Ok(GstreamerPipelineSpec::vp8_opus_software()),
+        _ => Err(anyhow!(
+            "no pipeline builder for encoder {element}/{codec}"
+        )),
+    }
+}
+
+// ── Capabilities summary ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MediaCapabilities {
@@ -153,6 +658,14 @@ pub struct MediaCapabilities {
     pub available_backends: Vec<&'static str>,
     pub gstreamer: GstreamerCapabilities,
     pub runtime: MediaRuntimeStatus,
+    pub encoders: EncoderReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EncoderReport {
+    pub selected: Option<EncoderCandidate>,
+    pub candidates: Vec<EncoderCandidate>,
+    pub selection_reason: Option<String>,
 }
 
 impl MediaCapabilities {
@@ -168,6 +681,37 @@ impl MediaCapabilities {
             available_backends.push("gstreamer");
         }
 
+        // Probe encoders if GStreamer is available
+        let (candidates, selected, reason) = if gstreamer.available_for_runtime {
+            #[cfg(feature = "media-gstreamer")]
+            {
+                let candidates = build_candidates(|name| {
+                    gstreamer::ElementFactory::find(name).is_some()
+                });
+                // Try selection to get the exact selected encoder, but don't fail on auto
+                let (selected, reason) = match select_encoder(&config.video_encoder) {
+                    Ok(sel) => {
+                        let candidate = EncoderCandidate {
+                            element: sel.spec.video_encoder,
+                            codec: sel.spec.video_codec,
+                            hardware: sel.spec.hardware,
+                            usable: true,
+                            skip_reason: None,
+                        };
+                        (Some(candidate), Some(sel.selection_reason))
+                    }
+                    Err(err) => (None, Some(err.to_string())),
+                };
+                (candidates, selected, reason)
+            }
+            #[cfg(not(feature = "media-gstreamer"))]
+            {
+                (Vec::new(), None, None)
+            }
+        } else {
+            (Vec::new(), None, None)
+        };
+
         Self {
             selected_backend: config.selected_backend,
             compiled_backends,
@@ -176,6 +720,11 @@ impl MediaCapabilities {
             runtime: MediaRuntimeStatus {
                 backend: config.selected_backend.as_str(),
                 ..Default::default()
+            },
+            encoders: EncoderReport {
+                selected,
+                candidates,
+                selection_reason: reason,
             },
         }
     }
@@ -278,7 +827,8 @@ fn detect_gstreamer_capabilities() -> GstreamerCapabilities {
 #[cfg(test)]
 mod tests {
     use super::{
-        GstreamerPipelineSpec, MediaBackend, MediaConfig, WebRtcTransportMode,
+        GstreamerPipelineSpec, MediaBackend, MediaConfig, VideoEncoderConfig,
+        VideoEncoderSelection, WebRtcTransportMode,
     };
 
     #[test]
@@ -301,7 +851,7 @@ mod tests {
     fn source_priority_is_cli_then_env_then_file_then_default() {
         unsafe { std::env::remove_var(MediaBackend::ENV_VAR) };
         assert_eq!(
-            MediaConfig::from_sources(Some("gstreamer"), Some("legacy"))
+            MediaConfig::from_sources(Some("gstreamer"), Some("legacy"), None, None)
                 .unwrap()
                 .selected_backend,
             MediaBackend::Gstreamer
@@ -309,7 +859,7 @@ mod tests {
 
         unsafe { std::env::set_var(MediaBackend::ENV_VAR, "gstreamer") };
         assert_eq!(
-            MediaConfig::from_sources(None, Some("legacy"))
+            MediaConfig::from_sources(None, Some("legacy"), None, None)
                 .unwrap()
                 .selected_backend,
             MediaBackend::Gstreamer
@@ -317,13 +867,13 @@ mod tests {
 
         unsafe { std::env::remove_var(MediaBackend::ENV_VAR) };
         assert_eq!(
-            MediaConfig::from_sources(None, Some("gstreamer"))
+            MediaConfig::from_sources(None, Some("gstreamer"), None, None)
                 .unwrap()
                 .selected_backend,
             MediaBackend::Gstreamer
         );
         assert_eq!(
-            MediaConfig::from_sources(None, None)
+            MediaConfig::from_sources(None, None, None, None)
                 .unwrap()
                 .selected_backend,
             MediaBackend::Legacy
@@ -334,6 +884,7 @@ mod tests {
     fn legacy_backend_honors_requested_webrtc_transport_mode() {
         let config = MediaConfig {
             selected_backend: MediaBackend::Legacy,
+            video_encoder: VideoEncoderConfig::default(),
         };
 
         assert_eq!(
@@ -354,6 +905,7 @@ mod tests {
     fn gstreamer_backend_forces_media_tracks() {
         let config = MediaConfig {
             selected_backend: MediaBackend::Gstreamer,
+            video_encoder: VideoEncoderConfig::default(),
         };
 
         assert_eq!(
@@ -381,5 +933,36 @@ mod tests {
         assert!(spec.audio_pipeline.contains("audioconvert ! audioresample"));
         assert!(spec.audio_pipeline.contains("rtpopuspay"));
         assert!(spec.audio_pipeline.contains("appsink name=audio_sink"));
+    }
+
+    #[test]
+    fn h264_pipelines_have_correct_mime_type() {
+        for spec in &[
+            GstreamerPipelineSpec::h264_nvenc(2500, 60),
+            GstreamerPipelineSpec::h264_qsv(2500, 60),
+            GstreamerPipelineSpec::h264_vaapi(2500, 60),
+            GstreamerPipelineSpec::h264_x264_software(2500, 60),
+        ] {
+            assert_eq!(spec.video_codec, "h264");
+            assert!(spec.video_pipeline.contains("rtph264pay"));
+            assert!(spec.video_pipeline.contains("appsink name=video_sink"));
+        }
+    }
+
+    #[test]
+    fn encoder_selection_parse_aliases() {
+        assert_eq!(
+            VideoEncoderSelection::parse("auto").unwrap(),
+            VideoEncoderSelection::Auto
+        );
+        assert_eq!(
+            VideoEncoderSelection::parse("nvenc").unwrap(),
+            VideoEncoderSelection::Nvenc
+        );
+        assert_eq!(
+            VideoEncoderSelection::parse("software").unwrap(),
+            VideoEncoderSelection::Software
+        );
+        assert!(VideoEncoderSelection::parse("banana").is_err());
     }
 }

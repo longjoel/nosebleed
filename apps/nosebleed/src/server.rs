@@ -44,6 +44,8 @@ use crate::auth::{MatchClaims, MatchRole, validate_match_token};
 use crate::gstreamer_backend::SharedGstreamerMedia;
 use crate::input::{Button, InputHub};
 use crate::media::{MediaBackend, MediaCapabilities, MediaConfig, WebRtcTransportMode};
+#[cfg(feature = "media-gstreamer")]
+use crate::media::select_encoder;
 use crate::protocol::{
     ClientCommand, ClientMessage, ServerMessage, decode_input_binary, now_unix_ms,
     parse_client_message, serialize_server_message,
@@ -142,9 +144,19 @@ impl ServerState {
 
         #[cfg(feature = "media-gstreamer")]
         let gstreamer_media = if media_config.selected_backend == MediaBackend::Gstreamer {
+            let selection = select_encoder(&media_config.video_encoder)
+                .context("failed to select GStreamer video encoder")?;
+            eprintln!(
+                "encoder selected: element={} codec={} hardware={} reason={}",
+                selection.spec.video_encoder,
+                selection.spec.video_codec,
+                selection.spec.hardware,
+                selection.selection_reason,
+            );
             Some(Arc::new(SharedGstreamerMedia::start(
                 video_rx.clone(),
                 audio_tx.clone(),
+                selection,
             )?))
         } else {
             None

@@ -8,12 +8,12 @@ use gstreamer_app as gst_app;
 use gst_app::{AppSinkCallbacks, AppSrc};
 use rtp::packet::Packet as RtpPacket;
 use tokio::sync::{broadcast, mpsc, watch};
-use webrtc::api::media_engine::{MIME_TYPE_OPUS, MIME_TYPE_VP8};
+use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc_util::marshal::Unmarshal;
 
-use crate::media::{GstreamerPipelineSpec, MediaRuntimeStatus};
+use crate::media::{MediaRuntimeStatus, SelectedEncoder};
 
 const FRAME_MAGIC: &[u8; 4] = b"NBF0";
 const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
@@ -32,10 +32,11 @@ impl SharedGstreamerMedia {
     pub fn start(
         raw_video_rx: watch::Receiver<Option<Arc<[u8]>>>,
         audio_tx: broadcast::Sender<Arc<[u8]>>,
+        selection: SelectedEncoder,
     ) -> Result<Self> {
         gst::init().context("failed to initialize GStreamer runtime")?;
 
-        let spec = GstreamerPipelineSpec::vp8_opus_software();
+        let spec = selection.spec;
         let runtime = Arc::new(Mutex::new(MediaRuntimeStatus {
             backend: "gstreamer",
             transport: "media-tracks",
@@ -49,10 +50,17 @@ impl SharedGstreamerMedia {
             dropped_video_frames: 0,
         }));
 
+        let video_mime = if spec.video_codec == "h264" {
+            MIME_TYPE_H264
+        } else {
+            MIME_TYPE_VP8
+        };
+        let video_clock_rate = if spec.video_codec == "h264" { 90000 } else { 90000 };
+
         let video_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_VP8.to_owned(),
-                clock_rate: 90_000,
+                mime_type: video_mime.to_owned(),
+                clock_rate: video_clock_rate,
                 ..Default::default()
             },
             "video".to_owned(),

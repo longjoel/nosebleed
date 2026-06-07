@@ -68,6 +68,12 @@ struct Cli {
 
     #[arg(long, env = "NOSEBLEED_MEDIA_BACKEND")]
     media_backend: Option<String>,
+
+    #[arg(long)]
+    video_codec: Option<String>,
+
+    #[arg(long)]
+    video_encoder: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -214,6 +220,8 @@ fn load_app_config(cli: &Cli) -> Result<AppConfig> {
     let media = MediaConfig::from_sources(
         cli.media_backend.as_deref(),
         file_config.media_backend.as_deref(),
+        cli.video_codec.as_deref(),
+        cli.video_encoder.as_deref(),
     )?;
 
     Ok(AppConfig {
