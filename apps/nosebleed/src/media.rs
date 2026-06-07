@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaBackend {
-    Legacy,
     Gstreamer,
 }
 
@@ -15,17 +14,15 @@ impl MediaBackend {
 
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "legacy" => Ok(Self::Legacy),
             "gstreamer" | "gst" => Ok(Self::Gstreamer),
             other => Err(anyhow!(
-                "unsupported media backend '{other}' (expected legacy or gstreamer)"
+                "unsupported media backend '{other}' (expected gstreamer)"
             )),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Legacy => "legacy",
             Self::Gstreamer => "gstreamer",
         }
     }
@@ -33,7 +30,7 @@ impl MediaBackend {
 
 impl Default for MediaBackend {
     fn default() -> Self {
-        Self::Legacy
+        Self::Gstreamer
     }
 }
 
@@ -190,8 +187,6 @@ pub struct MediaConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebRtcTransportMode {
-    RawDataChannel,
-    Vp8DataChannel,
     MediaTracks,
 }
 
@@ -209,7 +204,7 @@ impl MediaConfig {
         } else if let Some(raw) = file_backend {
             MediaBackend::parse(raw)?
         } else {
-            MediaBackend::Legacy
+            MediaBackend::Gstreamer
         };
 
         let video_encoder = VideoEncoderConfig::from_env(codec_override, encoder_override)?;
@@ -222,16 +217,9 @@ impl MediaConfig {
 
     pub fn select_webrtc_transport(
         &self,
-        requested_video_mode: Option<&str>,
+        _requested_video_mode: Option<&str>,
     ) -> WebRtcTransportMode {
-        match self.selected_backend {
-            MediaBackend::Gstreamer => WebRtcTransportMode::MediaTracks,
-            MediaBackend::Legacy => match requested_video_mode {
-                Some("track-vp8") => WebRtcTransportMode::MediaTracks,
-                Some("vp8") => WebRtcTransportMode::Vp8DataChannel,
-                _ => WebRtcTransportMode::RawDataChannel,
-            },
-        }
+        WebRtcTransportMode::MediaTracks
     }
 }
 
@@ -252,8 +240,8 @@ pub struct MediaRuntimeStatus {
 impl Default for MediaRuntimeStatus {
     fn default() -> Self {
         Self {
-            backend: "legacy",
-            transport: "data-channel",
+            backend: "gstreamer",
+            transport: "media-tracks",
             video_codec: None,
             video_encoder: None,
             audio_codec: None,
@@ -439,7 +427,6 @@ pub struct SelectedEncoder {
     pub selection_reason: String,
 }
 
-#[cfg(feature = "media-gstreamer")]
 pub fn select_encoder(
     config: &VideoEncoderConfig,
 ) -> Result<SelectedEncoder> {
@@ -525,16 +512,7 @@ pub fn select_encoder(
     ))
 }
 
-#[cfg(not(feature = "media-gstreamer"))]
-pub fn select_encoder(
-    _config: &VideoEncoderConfig,
-) -> Result<SelectedEncoder> {
-    Err(anyhow!(
-        "binary not built with media-gstreamer feature"
-    ))
-}
 
-#[cfg(feature = "media-gstreamer")]
 fn build_candidates(has: impl Fn(&str) -> bool) -> Vec<EncoderCandidate> {
     vec![
         EncoderCandidate {
@@ -606,7 +584,6 @@ fn build_candidates(has: impl Fn(&str) -> bool) -> Vec<EncoderCandidate> {
     ]
 }
 
-#[cfg(feature = "media-gstreamer")]
 fn build_hardcoded_pipeline(
     element: &str,
     codec: &str,
@@ -675,31 +652,24 @@ impl MediaCapabilities {
 
         // Probe encoders if GStreamer is available
         let (candidates, selected, reason) = if gstreamer.available_for_runtime {
-            #[cfg(feature = "media-gstreamer")]
-            {
-                let candidates = build_candidates(|name| {
-                    gstreamer::ElementFactory::find(name).is_some()
-                });
-                // Try selection to get the exact selected encoder, but don't fail on auto
-                let (selected, reason) = match select_encoder(&config.video_encoder) {
-                    Ok(sel) => {
-                        let candidate = EncoderCandidate {
-                            element: sel.spec.video_encoder,
-                            codec: sel.spec.video_codec,
-                            hardware: sel.spec.hardware,
-                            usable: true,
-                            skip_reason: None,
-                        };
-                        (Some(candidate), Some(sel.selection_reason))
-                    }
-                    Err(err) => (None, Some(err.to_string())),
-                };
-                (candidates, selected, reason)
-            }
-            #[cfg(not(feature = "media-gstreamer"))]
-            {
-                (Vec::new(), None, None)
-            }
+            let candidates = build_candidates(|name| {
+                gstreamer::ElementFactory::find(name).is_some()
+            });
+            // Try selection to get the exact selected encoder, but don't fail on auto
+            let (selected, reason) = match select_encoder(&config.video_encoder) {
+                Ok(sel) => {
+                    let candidate = EncoderCandidate {
+                        element: sel.spec.video_encoder,
+                        codec: sel.spec.video_codec,
+                        hardware: sel.spec.hardware,
+                        usable: true,
+                        skip_reason: None,
+                    };
+                    (Some(candidate), Some(sel.selection_reason))
+                }
+                Err(err) => (None, Some(err.to_string())),
+            };
+            (candidates, selected, reason)
         } else {
             (Vec::new(), None, None)
         };
@@ -763,7 +733,6 @@ impl GstreamerElements {
     }
 }
 
-#[cfg(feature = "media-gstreamer")]
 fn detect_gstreamer_capabilities() -> GstreamerCapabilities {
     use gstreamer as gst;
 
@@ -801,21 +770,6 @@ fn detect_gstreamer_capabilities() -> GstreamerCapabilities {
     }
 }
 
-#[cfg(not(feature = "media-gstreamer"))]
-fn detect_gstreamer_capabilities() -> GstreamerCapabilities {
-    GstreamerCapabilities {
-        compiled_in: false,
-        available_for_runtime: false,
-        init_ok: false,
-        version: None,
-        missing_reason: Some(
-            "binary not built with Cargo feature media-gstreamer; rebuild with --features media-gstreamer"
-                .to_string(),
-        ),
-        elements: GstreamerElements::all_false(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -825,7 +779,6 @@ mod tests {
 
     #[test]
     fn parses_media_backend_aliases() {
-        assert_eq!(MediaBackend::parse("legacy").unwrap(), MediaBackend::Legacy);
         assert_eq!(
             MediaBackend::parse("gstreamer").unwrap(),
             MediaBackend::Gstreamer
@@ -868,28 +821,7 @@ mod tests {
             MediaConfig::from_sources(None, None, None, None)
                 .unwrap()
                 .selected_backend,
-            MediaBackend::Legacy
-        );
-    }
-
-    #[test]
-    fn legacy_backend_honors_requested_webrtc_transport_mode() {
-        let config = MediaConfig {
-            selected_backend: MediaBackend::Legacy,
-            video_encoder: VideoEncoderConfig::default(),
-        };
-
-        assert_eq!(
-            config.select_webrtc_transport(Some("vp8")),
-            WebRtcTransportMode::Vp8DataChannel
-        );
-        assert_eq!(
-            config.select_webrtc_transport(Some("track-vp8")),
-            WebRtcTransportMode::MediaTracks
-        );
-        assert_eq!(
-            config.select_webrtc_transport(Some("raw")),
-            WebRtcTransportMode::RawDataChannel
+            MediaBackend::Gstreamer
         );
     }
 

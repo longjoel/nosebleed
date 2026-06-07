@@ -17,5 +17,4 @@ pub mod protocol;
 pub mod server;
 pub mod session;
 
-#[cfg(feature = "media-gstreamer")]
 pub mod gstreamer_backend;
