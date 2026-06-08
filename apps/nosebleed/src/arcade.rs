@@ -902,3 +902,386 @@ impl MachineState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ─────────────────────────────────────────────────────────
+
+    fn service() -> ArcadeService {
+        ArcadeService::new(2)
+    }
+
+    // ── Side parsing ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_side_parse_left() {
+        assert_eq!(Side::parse("left"), Some(Side::Left));
+        assert_eq!(Side::parse("LEFT"), Some(Side::Left));
+        assert_eq!(Side::parse(" Left "), Some(Side::Left));
+    }
+
+    #[test]
+    fn test_side_parse_right() {
+        assert_eq!(Side::parse("right"), Some(Side::Right));
+        assert_eq!(Side::parse("RIGHT"), Some(Side::Right));
+        assert_eq!(Side::parse(" Right "), Some(Side::Right));
+    }
+
+    #[test]
+    fn test_side_parse_invalid() {
+        assert_eq!(Side::parse(""), None);
+        assert_eq!(Side::parse("foo"), None);
+        assert_eq!(Side::parse("lefty"), None);
+    }
+
+    #[test]
+    fn test_side_opposite() {
+        assert_eq!(Side::Left.opposite(), Side::Right);
+        assert_eq!(Side::Right.opposite(), Side::Left);
+    }
+
+    // ── Service construction ────────────────────────────────────────────
+
+    #[test]
+    fn test_arcade_service_new_creates_correct_machine_count() {
+        let svc = service();
+        let overview = svc.overview();
+        assert_eq!(overview.machines.len(), 2);
+    }
+
+    #[test]
+    fn test_arcade_service_new_at_least_one_machine() {
+        let svc = ArcadeService::new(0);
+        let overview = svc.overview();
+        assert_eq!(overview.machines.len(), 1, "must create at least 1 machine");
+    }
+
+    #[test]
+    fn test_arcade_service_new_starts_free_play() {
+        let svc = service();
+        let overview = svc.overview();
+        for machine in &overview.machines {
+            assert_eq!(machine.status, MachineStatus::FreePlay);
+            assert!(machine.left_player.is_none());
+            assert!(machine.right_player.is_none());
+            assert_eq!(machine.left_queue_len, 0, "initial left queue should be empty");
+            assert_eq!(machine.right_queue_len, 0);
+        }
+    }
+
+    #[test]
+    fn test_arcade_overview_has_constants() {
+        let svc = service();
+        let overview = svc.overview();
+        assert!(overview.claim_timeout_ms > 0);
+        assert!(overview.no_show_cooldown_ms > 0);
+        assert!(overview.now_unix_ms > 0);
+    }
+
+    // ── Seat claiming ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_seat_claim_flow() {
+        let svc = service();
+
+        // Join left queue
+        let join = svc
+            .join_queue(1, "Alice".into(), Side::Left)
+            .expect("Alice joins left queue");
+        assert_eq!(join.position, 1);
+
+        // Since no one is seated left and left queue was empty, Alice should be
+        // called immediately. Claim the seat.
+        let claim = svc
+            .claim_seat(1, join.ticket_id)
+            .expect("Alice claims seat");
+        assert_eq!(claim.left_player, Some("Alice".to_string()));
+
+        // Verify machine status — still FreePlay because right seat is empty
+        assert_eq!(claim.status, MachineStatus::FreePlay);
+    }
+
+    #[test]
+    fn test_same_player_cannot_claim_twice() {
+        let svc = service();
+
+        let join = svc
+            .join_queue(1, "Bob".into(), Side::Right)
+            .expect("Bob joins right");
+        svc.claim_seat(1, join.ticket_id)
+            .expect("Bob claims seat");
+
+        // Bob tries to claim again — should fail (no active call)
+        let result = svc.claim_seat(1, join.ticket_id);
+        assert!(result.is_err());
+    }
+
+    // ── Queue ordering (FIFO) ───────────────────────────────────────────
+
+    #[test]
+    fn test_queue_fifo_ordering() {
+        let svc = service();
+
+        // Alice and Bob join left queue
+        let alice = svc
+            .join_queue(1, "Alice".into(), Side::Left)
+            .expect("Alice joins");
+        let _bob = svc
+            .join_queue(1, "Bob".into(), Side::Left)
+            .expect("Bob joins");
+
+        // Alice claims left seat
+        svc.claim_seat(1, alice.ticket_id)
+            .expect("Alice claims seat");
+
+        // Charlie joins right queue and claims right seat so we can play a round
+        let charlie = svc
+            .join_queue(1, "Charlie".into(), Side::Right)
+            .expect("Charlie joins");
+        svc.claim_seat(1, charlie.ticket_id)
+            .expect("Charlie claims seat");
+
+        // End round — Alice loses, so left seat becomes free.
+        // call_next_for_side should pick Bob from the queue.
+        svc.end_round(1, Side::Right, 0, 10)
+            .expect("end round, Charlie wins");
+
+        // Now Bob should be called for the left seat
+        let machine = svc.machine(1).expect("get machine 1");
+        let called = machine.called.expect("should have a seat call for Bob");
+        assert_eq!(called.player_name, "Bob");
+    }
+
+    // ── Player already seated ───────────────────────────────────────────
+
+    #[test]
+    fn test_player_already_seated_cannot_queue() {
+        let svc = service();
+
+        let join = svc
+            .join_queue(1, "Charlie".into(), Side::Right)
+            .expect("Charlie joins");
+        svc.claim_seat(1, join.ticket_id)
+            .expect("Charlie claims");
+
+        // Charlie tries to queue again
+        let result = svc.join_queue(1, "Charlie".into(), Side::Left);
+        assert!(
+            result.is_err(),
+            "already seated player should be rejected"
+        );
+        if let Err(err) = result {
+            assert!(matches!(err, ArcadeError::Conflict(_)));
+        }
+    }
+
+    // ── Player already has ticket ───────────────────────────────────────
+
+    #[test]
+    fn test_player_with_active_ticket_cannot_queue_again() {
+        let svc = service();
+
+        svc.join_queue(1, "Dave".into(), Side::Left)
+            .expect("Dave joins left");
+
+        let result = svc.join_queue(1, "Dave".into(), Side::Right);
+        assert!(
+            result.is_err(),
+            "player with active ticket should be rejected"
+        );
+    }
+
+    // ── Machine removal / cleanup via leave_queue ───────────────────────
+
+    #[test]
+    fn test_leave_queue_removes_ticket() {
+        let svc = service();
+
+        let join = svc
+            .join_queue(1, "Eve".into(), Side::Left)
+            .expect("Eve joins");
+        assert_eq!(join.position, 1);
+
+        let machine = svc
+            .leave_queue(1, join.ticket_id)
+            .expect("Eve leaves queue");
+        assert_eq!(machine.left_queue.len(), 0, "leave queue should clear left queue");
+    }
+
+    #[test]
+    fn test_leave_queue_unknown_ticket_returns_not_found() {
+        let svc = service();
+        let result = svc.leave_queue(1, 99999);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ArcadeError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_leave_queue_zero_ticket_bad_request() {
+        let svc = service();
+        let result = svc.leave_queue(1, 0);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ArcadeError::BadRequest(_)
+        ));
+    }
+
+    // ── Machine not found ───────────────────────────────────────────────
+
+    #[test]
+    fn test_machine_not_found() {
+        let svc = service();
+        let result = svc.machine(999);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ArcadeError::NotFound(_)));
+    }
+
+    // ── normalize_player_name ───────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_player_name_trims_and_downcases_key() {
+        let (display, key) =
+            normalize_player_name("  Alice  ").expect("normalize name");
+        assert_eq!(display, "Alice");
+        assert_eq!(key, "alice");
+    }
+
+    #[test]
+    fn test_normalize_player_name_empty_fails() {
+        let result = normalize_player_name("");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ArcadeError::BadRequest(_)));
+    }
+
+    #[test]
+    fn test_normalize_player_name_truncates_long_names() {
+        let long = "a".repeat(50);
+        let (display, key) =
+            normalize_player_name(&long).expect("normalize long name");
+        assert_eq!(display.len(), MAX_PLAYER_NAME_LEN);
+        assert_eq!(key.len(), MAX_PLAYER_NAME_LEN);
+    }
+
+    // ── derive_status ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_derive_status_free_play_both_empty() {
+        let m = MachineState {
+            id: 1,
+            name: "test".into(),
+            status: MachineStatus::FreePlay,
+            left_player: None,
+            right_player: None,
+            left_queue: vec![],
+            right_queue: vec![],
+            called: None,
+            last_round: None,
+        };
+        assert_eq!(derive_status(&m), MachineStatus::FreePlay);
+    }
+
+    #[test]
+    fn test_derive_status_match_live_both_seated() {
+        let m = MachineState {
+            id: 1,
+            name: "test".into(),
+            status: MachineStatus::FreePlay,
+            left_player: Some(SeatPlayer {
+                player_name: "A".into(),
+                player_key: "a".into(),
+            }),
+            right_player: Some(SeatPlayer {
+                player_name: "B".into(),
+                player_key: "b".into(),
+            }),
+            left_queue: vec![],
+            right_queue: vec![],
+            called: None,
+            last_round: None,
+        };
+        assert_eq!(derive_status(&m), MachineStatus::MatchLive);
+    }
+
+    #[test]
+    fn test_derive_status_seat_call() {
+        let m = MachineState {
+            id: 1,
+            name: "test".into(),
+            status: MachineStatus::FreePlay,
+            left_player: None,
+            right_player: None,
+            left_queue: vec![],
+            right_queue: vec![],
+            called: Some(SeatCall {
+                side: Side::Left,
+                ticket_id: 1,
+                player_name: "A".into(),
+                player_key: "a".into(),
+                expires_unix_ms: 99999,
+            }),
+            last_round: None,
+        };
+        assert_eq!(derive_status(&m), MachineStatus::SeatCall);
+    }
+
+    // ── end_round ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_end_round_requires_both_players() {
+        let svc = service();
+
+        // Only seat left player
+        let join = svc
+            .join_queue(1, "Frank".into(), Side::Left)
+            .expect("Frank joins");
+        svc.claim_seat(1, join.ticket_id)
+            .expect("Frank claims");
+
+        let result = svc.end_round(1, Side::Left, 10, 5);
+        assert!(
+            result.is_err(),
+            "end_round without right player should fail"
+        );
+    }
+
+    // ── call_next_for_side edge cases ───────────────────────────────────
+
+    #[test]
+    fn test_call_next_for_side_noop_when_seat_occupied() {
+        let mut m = MachineState {
+            id: 1,
+            name: "test".into(),
+            status: MachineStatus::FreePlay,
+            left_player: Some(SeatPlayer {
+                player_name: "A".into(),
+                player_key: "a".into(),
+            }),
+            right_player: None,
+            left_queue: vec![QueueEntry {
+                ticket_id: 10,
+                player_name: "B".into(),
+                player_key: "b".into(),
+                joined_unix_ms: 0,
+            }],
+            right_queue: vec![],
+            called: None,
+            last_round: None,
+        };
+        // call_next_for_side left — should NOT override seated player
+        call_next_for_side(&mut m, Side::Left, 1000, 20000);
+        assert!(m.called.is_none(), "should not call when seat is occupied");
+        assert_eq!(m.status, MachineStatus::FreePlay);
+    }
+
+    #[test]
+    fn test_day_key_division() {
+        let day = day_key(86_400_001);
+        assert_eq!(day, 1, "86_400_001 ms is day 1");
+        assert_eq!(day_key(0), 0);
+        assert_eq!(day_key(86_399_999), 0);
+        assert_eq!(day_key(86_400_000), 1);
+    }
+}

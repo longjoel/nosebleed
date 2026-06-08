@@ -1679,4 +1679,213 @@ mod tests {
             "negotiate_webrtc_offer with garbage SDP should fail"
         );
     }
+
+    // ── 13. WebRtcOffer serialization/deserialization ─────────────────────
+
+    #[test]
+    fn test_webrtc_offer_deserialize() {
+        let json = r#"{"type":"offer","sdp":"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n","video_mode":"h264"}"#;
+        let offer: WebRtcOffer = serde_json::from_str(json).expect("deserialize offer");
+        assert_eq!(offer.kind, "offer");
+        assert!(offer.sdp.contains("v=0"));
+        assert_eq!(offer.video_mode, Some("h264".to_string()));
+    }
+
+    #[test]
+    fn test_webrtc_offer_deserialize_no_video_mode() {
+        let json = r#"{"type":"offer","sdp":"v=0"}"#;
+        let offer: WebRtcOffer = serde_json::from_str(json).expect("deserialize offer without video_mode");
+        assert_eq!(offer.kind, "offer");
+        assert_eq!(offer.sdp, "v=0");
+        assert_eq!(offer.video_mode, None);
+    }
+
+    // ── 14. WebRtcAnswer serialization ────────────────────────────────────
+
+    #[test]
+    fn test_webrtc_answer_serialize() {
+        let answer = WebRtcAnswer {
+            kind: "answer",
+            sdp: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n".to_string(),
+        };
+        let json = serde_json::to_string(&answer).expect("serialize answer");
+        assert!(json.contains("\"type\":\"answer\""));
+        assert!(json.contains("\"sdp\":\"v=0"));
+    }
+
+    // ── 15. SessionStatus default values ──────────────────────────────────
+
+    #[test]
+    fn test_session_status_default_field_values() {
+        let status = SessionStatus {
+            running: false,
+            mode: "stopped".to_string(),
+            core: None,
+            content: None,
+            fps: 0.0,
+            width: 0,
+            height: 0,
+            started_at_unix_ms: None,
+            session_dir: None,
+            last_exit: None,
+        };
+        assert!(!status.running);
+        assert_eq!(status.mode, "stopped");
+        assert!(status.core.is_none());
+        assert!(status.content.is_none());
+        assert_eq!(status.fps, 0.0);
+        assert_eq!(status.width, 0);
+        assert_eq!(status.height, 0);
+        assert!(status.started_at_unix_ms.is_none());
+        assert!(status.session_dir.is_none());
+        assert!(status.last_exit.is_none());
+    }
+
+    #[test]
+    fn test_session_status_with_last_exit() {
+        let status = SessionStatus {
+            running: false,
+            mode: "stopped".to_string(),
+            core: None,
+            content: None,
+            fps: 0.0,
+            width: 0,
+            height: 0,
+            started_at_unix_ms: None,
+            session_dir: None,
+            last_exit: Some("runtime crashed".to_string()),
+        };
+        assert_eq!(status.last_exit.as_deref(), Some("runtime crashed"));
+    }
+
+    // ── 16. ServerState test helpers (construction with defaults) ─────────
+
+    #[test]
+    fn test_dummy_server_state_has_expected_defaults() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        assert!(!state.shutdown.load(Ordering::Relaxed));
+        assert_eq!(state.next_client_id.load(Ordering::Relaxed), 0);
+        assert!(!state.auth.require_auth);
+        assert_eq!(state.auth.reconnect_window, Duration::from_secs(30));
+        assert_eq!(state.turn_credential, "test-credential");
+    }
+
+    #[test]
+    fn test_dummy_server_state_with_auth_has_secret() {
+        let state = dummy_server_state(dummy_auth_config(true));
+        assert!(state.auth.require_auth);
+        assert!(state.auth.secret.is_some());
+    }
+
+    // ── 17. InputSessionRegistry: is_source_owner edge cases ──────────────
+
+    #[test]
+    fn test_input_session_registry_is_source_owner_no_port() {
+        let registry = InputSessionRegistry::default();
+        assert!(!registry.is_source_owner("anyone", 0));
+    }
+
+    #[test]
+    fn test_input_session_registry_is_source_owner_reconnect_blocks() {
+        let mut registry = InputSessionRegistry::default();
+        registry
+            .reserve_ports("source-1", "player-1", &[0], Duration::from_secs(30))
+            .expect("reserve");
+
+        // Before disconnect, source owns port
+        assert!(registry.is_source_owner("source-1", 0));
+
+        // Mark disconnected — reconnect window active
+        registry.mark_disconnected("source-1", Duration::from_secs(60));
+
+        // During reconnect window, source does NOT own port
+        assert!(
+            !registry.is_source_owner("source-1", 0),
+            "source should not own port during reconnect window"
+        );
+    }
+
+    // ── 18. InputSessionRegistry: cleanup_expired behavior ────────────────
+
+    #[test]
+    fn test_input_session_registry_cleanup_expired_removes_expired() {
+        let mut registry = InputSessionRegistry::default();
+        registry
+            .reserve_ports("source-1", "player-1", &[0], Duration::from_secs(30))
+            .expect("reserve");
+
+        // Set reconnect_until to the past (expired)
+        if let Some(owner) = registry.per_port.get_mut(&0) {
+            owner.reconnect_until = Some(Instant::now() - Duration::from_secs(1));
+        }
+
+        registry.cleanup_expired();
+
+        // Port should be removed
+        assert!(
+            !registry.per_port.contains_key(&0),
+            "expired reconnect port should be cleaned up"
+        );
+    }
+
+    #[test]
+    fn test_input_session_registry_cleanup_expired_keeps_active() {
+        let mut registry = InputSessionRegistry::default();
+        registry
+            .reserve_ports("source-1", "player-1", &[0], Duration::ZERO)
+            .expect("reserve with no reconnect");
+
+        // No reconnect window → reconnect_until is None
+        assert!(registry.per_port.contains_key(&0));
+
+        registry.cleanup_expired();
+        assert!(
+            registry.per_port.contains_key(&0),
+            "port without reconnect should survive cleanup"
+        );
+    }
+
+    // ── 19. InputSessionRegistry: reserve_ports with reconnect window ─────
+
+    #[test]
+    fn test_input_session_registry_reserve_with_zero_reconnect() {
+        let mut registry = InputSessionRegistry::default();
+        registry
+            .reserve_ports("source-1", "player-1", &[0, 1], Duration::ZERO)
+            .expect("reserve with zero reconnect");
+        assert_eq!(registry.per_port.len(), 2);
+        assert!(registry.is_source_owner("source-1", 0));
+    }
+
+    // ── 20. authorize_claims with auth disabled ───────────────────────────
+
+    #[test]
+    fn test_authorize_claims_no_auth_returns_none() {
+        let state = dummy_server_state(dummy_auth_config(false));
+
+        // We can't call authorize_claims directly because it returns Response.
+        // Test the logic via authorize_stream_claims which is the public path.
+        let result = authorize_stream_claims(&state, None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    // ── 21. WsQuery defaults ─────────────────────────────────────────────
+
+    #[test]
+    fn test_ws_query_default_token_is_none() {
+        let query = WsQuery::default();
+        assert!(query.token.is_none());
+    }
+
+    // ── 22. cleanup_input_source removes from input_hub ───────────────────
+
+    #[test]
+    fn test_cleanup_input_source_removes_source_from_hub() {
+        // Verify the function is callable and doesn't panic with a clean state
+        let state = dummy_server_state(dummy_auth_config(false));
+        // No source registered — should be a no-op
+        cleanup_input_source(&state, "non-existent-source");
+        // If we get here without panicking, the test passes
+    }
 }

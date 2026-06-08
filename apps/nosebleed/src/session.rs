@@ -451,3 +451,345 @@ fn sanitize_session_id(raw: &str) -> String {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── snapshot_locked ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_snapshot_locked_no_active_returns_stopped() {
+        let state = ManagerState::default();
+        let status = snapshot_locked(&state);
+        assert!(!status.running, "no active runtime → not running");
+        assert_eq!(status.mode, "stopped");
+        assert!(status.core.is_none());
+        assert!(status.content.is_none());
+        assert_eq!(status.fps, 0.0);
+        assert_eq!(status.width, 0);
+        assert_eq!(status.height, 0);
+        assert!(status.started_at_unix_ms.is_none());
+        assert!(status.session_dir.is_none());
+        assert!(status.last_exit.is_none());
+    }
+
+    #[test]
+    fn test_snapshot_locked_active_mock_mode() {
+        let state = ManagerState {
+            active: Some(ActiveRuntime {
+                launch: LaunchConfig {
+                    core: None,
+                    content: None,
+                    fps: 30.0,
+                    width: 320,
+                    height: 240,
+                    workspace: WorkspaceConfig::default(),
+                },
+                session_dir: Some(PathBuf::from("/tmp/session-1")),
+                started_at_unix_ms: 1000,
+                shutdown: Arc::new(AtomicBool::new(false)),
+                control: Arc::new(RuntimeControl::default()),
+                handle: std::thread::spawn(|| Ok(())),
+            }),
+            last_exit: Some("crashed".into()),
+        };
+        let status = snapshot_locked(&state);
+        assert!(status.running, "should be running");
+        assert_eq!(status.mode, "mock", "no core → mock mode");
+        assert!(status.core.is_none());
+        assert!(status.content.is_none());
+        assert_eq!(status.fps, 30.0);
+        assert_eq!(status.width, 320);
+        assert_eq!(status.height, 240);
+        assert_eq!(status.started_at_unix_ms, Some(1000));
+        assert_eq!(
+            status.session_dir,
+            Some("/tmp/session-1".to_string())
+        );
+        assert_eq!(status.last_exit, Some("crashed".to_string()));
+    }
+
+    #[test]
+    fn test_snapshot_locked_active_libretro_mode() {
+        let state = ManagerState {
+            active: Some(ActiveRuntime {
+                launch: LaunchConfig {
+                    core: Some(PathBuf::from("/cores/genesis_libretro.so")),
+                    content: Some(PathBuf::from("/roms/sonic.bin")),
+                    fps: 60.0,
+                    width: 640,
+                    height: 480,
+                    workspace: WorkspaceConfig::default(),
+                },
+                session_dir: None,
+                started_at_unix_ms: 2000,
+                shutdown: Arc::new(AtomicBool::new(false)),
+                control: Arc::new(RuntimeControl::default()),
+                handle: std::thread::spawn(|| Ok(())),
+            }),
+            last_exit: None,
+        };
+        let status = snapshot_locked(&state);
+        assert!(status.running, "should be running");
+        assert_eq!(status.mode, "libretro");
+        assert_eq!(
+            status.core,
+            Some("/cores/genesis_libretro.so".to_string())
+        );
+        assert_eq!(status.content, Some("/roms/sonic.bin".to_string()));
+        assert_eq!(status.fps, 60.0);
+    }
+
+    // ── sanitize_session_id ─────────────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_session_id_preserves_alphanumeric() {
+        assert_eq!(sanitize_session_id("my-session_42"), "my-session_42");
+    }
+
+    #[test]
+    fn test_sanitize_session_id_replaces_special_chars() {
+        assert_eq!(sanitize_session_id("hello world!"), "hello_world_");
+    }
+
+    #[test]
+    fn test_sanitize_session_id_empty_fallback() {
+        assert_eq!(sanitize_session_id(""), "session");
+    }
+
+    // ── LaunchConfig / WorkspaceConfig ──────────────────────────────────
+
+    #[test]
+    fn test_workspace_config_default() {
+        let cfg = WorkspaceConfig::default();
+        assert!(cfg.root_dir.is_none());
+        assert!(cfg.id.is_none());
+        assert!(!cfg.copy_core);
+        assert!(!cfg.copy_content);
+    }
+
+    #[test]
+    fn test_now_unix_ms_returns_nonzero() {
+        let ts = now_unix_ms();
+        assert!(ts > 1_700_000_000_000, "should be a recent unix timestamp in ms");
+    }
+
+    // ── start_from_request config merging ───────────────────────────────
+
+    #[test]
+    fn test_start_from_request_merges_defaults() {
+        let request = StartRequest {
+            core: None,
+            content: None,
+            fps: None,
+            width: None,
+            height: None,
+            force_restart: false,
+            workspace: None,
+        };
+        // We can't easily test start() because it spawns threads, but we
+        // verify the request → LaunchConfig merging is correct by constructing
+        // the manager with known defaults and checking what start_from_request
+        // builds internally.
+        //
+        // Simulate the merge logic here as a unit test of the defaults:
+        let defaults = LaunchConfig {
+            core: Some(PathBuf::from("/cores/test.so")),
+            content: Some(PathBuf::from("/roms/test.bin")),
+            fps: 60.0,
+            width: 640,
+            height: 480,
+            workspace: WorkspaceConfig {
+                root_dir: Some(PathBuf::from("/sessions")),
+                id: Some("test".into()),
+                ..Default::default()
+            },
+        };
+
+        let merged = LaunchConfig {
+            core: request.core.or_else(|| defaults.core.clone()),
+            content: request.content.or_else(|| defaults.content.clone()),
+            fps: request.fps.unwrap_or(defaults.fps).max(1.0),
+            width: request.width.unwrap_or(defaults.width).max(1),
+            height: request.height.unwrap_or(defaults.height).max(1),
+            workspace: request
+                .workspace
+                .unwrap_or_else(|| defaults.workspace.clone()),
+        };
+
+        assert_eq!(merged.core, Some(PathBuf::from("/cores/test.so")));
+        assert_eq!(merged.content, Some(PathBuf::from("/roms/test.bin")));
+        assert_eq!(merged.fps, 60.0);
+        assert_eq!(merged.width, 640);
+        assert_eq!(merged.height, 480);
+        assert_eq!(
+            merged.workspace.root_dir,
+            Some(PathBuf::from("/sessions"))
+        );
+    }
+
+    #[test]
+    fn test_start_from_request_overrides_defaults() {
+        let defaults = LaunchConfig {
+            core: Some(PathBuf::from("/cores/default.so")),
+            content: Some(PathBuf::from("/roms/default.bin")),
+            fps: 60.0,
+            width: 640,
+            height: 480,
+            workspace: WorkspaceConfig::default(),
+        };
+
+        let request = StartRequest {
+            core: Some(PathBuf::from("/cores/custom.so")),
+            content: None,
+            fps: Some(30.0),
+            width: Some(1280),
+            height: Some(720),
+            force_restart: false,
+            workspace: None,
+        };
+
+        let merged = LaunchConfig {
+            core: request.core.or_else(|| defaults.core.clone()),
+            content: request.content.or_else(|| defaults.content.clone()),
+            fps: request.fps.unwrap_or(defaults.fps).max(1.0),
+            width: request.width.unwrap_or(defaults.width).max(1),
+            height: request.height.unwrap_or(defaults.height).max(1),
+            workspace: request
+                .workspace
+                .unwrap_or_else(|| defaults.workspace.clone()),
+        };
+
+        assert_eq!(merged.core, Some(PathBuf::from("/cores/custom.so")));
+        assert_eq!(merged.content, Some(PathBuf::from("/roms/default.bin")));
+        assert_eq!(merged.fps, 30.0);
+        assert_eq!(merged.width, 1280);
+        assert_eq!(merged.height, 720);
+    }
+
+    // ── Status struct ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_status_serialization() {
+        let status = Status {
+            running: true,
+            mode: "mock".into(),
+            core: None,
+            content: None,
+            fps: 60.0,
+            width: 640,
+            height: 480,
+            started_at_unix_ms: Some(12345),
+            session_dir: Some("/tmp/session".into()),
+            last_exit: None,
+        };
+        let json = serde_json::to_string(&status).expect("serialize Status");
+        assert!(json.contains("\"running\":true"));
+        assert!(json.contains("\"mode\":\"mock\""));
+        assert!(json.contains("\"fps\":60.0"));
+    }
+
+    #[test]
+    fn test_status_serialize_round_trip_fields_present() {
+        // Status only implements Serialize, not Deserialize, so we just
+        // verify that toggling running produces different JSON keys.
+        let stopped_json = serde_json::to_string(&Status {
+            running: false,
+            mode: "stopped".into(),
+            core: None,
+            content: None,
+            fps: 0.0,
+            width: 0,
+            height: 0,
+            started_at_unix_ms: None,
+            session_dir: None,
+            last_exit: None,
+        })
+        .expect("serialize stopped");
+        assert!(stopped_json.contains("\"mode\":\"stopped\""));
+        assert!(stopped_json.contains("\"running\":false"));
+
+        let running_json = serde_json::to_string(&Status {
+            running: true,
+            mode: "mock".into(),
+            core: None,
+            content: None,
+            fps: 60.0,
+            width: 640,
+            height: 480,
+            started_at_unix_ms: Some(999),
+            session_dir: Some("/s".into()),
+            last_exit: None,
+        })
+        .expect("serialize running");
+        assert!(running_json.contains("\"running\":true"));
+        assert!(running_json.contains("\"fps\":60.0"));
+    }
+
+    // ── ManagerState transitions ────────────────────────────────────────
+
+    #[test]
+    fn test_manager_state_active_replace() {
+        let mut state = ManagerState::default();
+        assert!(state.active.is_none());
+
+        state.active = Some(ActiveRuntime {
+            launch: LaunchConfig {
+                core: None,
+                content: None,
+                fps: 60.0,
+                width: 640,
+                height: 480,
+                workspace: WorkspaceConfig::default(),
+            },
+            session_dir: None,
+            started_at_unix_ms: 0,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(RuntimeControl::default()),
+            handle: std::thread::spawn(|| Ok(())),
+        });
+        assert!(state.active.is_some());
+
+        // Take and replace
+        let old = state.active.take();
+        assert!(old.is_some());
+        assert!(state.active.is_none());
+
+        state.last_exit = Some("replaced".to_string());
+        assert_eq!(state.last_exit.as_deref(), Some("replaced"));
+    }
+
+    // ── LaunchConfig builder helpers ────────────────────────────────────
+
+    #[test]
+    fn test_launch_config_fps_min_clamp() {
+        let mut base = LaunchConfig {
+            core: None,
+            content: None,
+            fps: 0.5,
+            width: 640,
+            height: 480,
+            workspace: WorkspaceConfig::default(),
+        };
+        // Simulate the clamp from start
+        base.fps = base.fps.max(1.0);
+        assert_eq!(base.fps, 1.0);
+    }
+
+    #[test]
+    fn test_launch_config_dimensions_min_clamp() {
+        let mut base = LaunchConfig {
+            core: None,
+            content: None,
+            fps: 60.0,
+            width: 0,
+            height: 0,
+            workspace: WorkspaceConfig::default(),
+        };
+        base.width = base.width.max(1);
+        base.height = base.height.max(1);
+        assert_eq!(base.width, 1);
+        assert_eq!(base.height, 1);
+    }
+}

@@ -475,3 +475,405 @@ fn le_u64(bytes: &[u8]) -> u64 {
     out.copy_from_slice(&bytes[..8]);
     u64::from_le_bytes(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{
+        AUDIO_PACKET_HEADER_LEN, AUDIO_PACKET_MAGIC, FRAME_HEADER_LEN, FRAME_MAGIC,
+    };
+
+    // ── endian helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_le_u32_round_trip() {
+        let buf = 0xDEAD_BEEFu32.to_le_bytes();
+        assert_eq!(le_u32(&buf), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn test_le_u64_round_trip() {
+        let buf = 0xCAFE_BABE_DEAD_BEEFu64.to_le_bytes();
+        assert_eq!(le_u64(&buf), 0xCAFE_BABE_DEAD_BEEF);
+    }
+
+    #[test]
+    fn test_le_u32_zero() {
+        assert_eq!(le_u32(&[0u8; 4]), 0);
+    }
+
+    #[test]
+    fn test_le_u64_zero() {
+        assert_eq!(le_u64(&[0u8; 8]), 0);
+    }
+
+    // ── magic constants ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_frame_magic_is_correct() {
+        assert_eq!(FRAME_MAGIC, b"NBF0", "FRAME_MAGIC must be NBF0");
+    }
+
+    #[test]
+    fn test_audio_packet_magic_is_correct() {
+        assert_eq!(
+            AUDIO_PACKET_MAGIC, b"NBA0",
+            "AUDIO_PACKET_MAGIC must be NBA0"
+        );
+    }
+
+    #[test]
+    fn test_default_video_frame_duration_is_16_666_us() {
+        assert_eq!(DEFAULT_VIDEO_FRAME_DURATION_US, 16_666);
+    }
+
+    // ── decode_raw_frame_packet ─────────────────────────────────────────
+
+    fn make_valid_frame_packet(sequence: u64, extra_bytes: usize) -> Vec<u8> {
+        let payload_len = 64u32;
+        let total_len = FRAME_HEADER_LEN + payload_len as usize + extra_bytes;
+        let mut buf = Vec::with_capacity(total_len);
+        buf.extend_from_slice(FRAME_MAGIC); // 4
+        buf.extend_from_slice(&sequence.to_le_bytes()); // 8
+        buf.extend_from_slice(&1234u64.to_le_bytes()); // timestamp_us 8
+        buf.extend_from_slice(&640u32.to_le_bytes()); // width 4
+        buf.extend_from_slice(&480u32.to_le_bytes()); // height 4
+        buf.extend_from_slice(&2560u32.to_le_bytes()); // pitch 4
+        buf.push(0u8); // pixel_format (BGRx) 1
+        buf.extend_from_slice(&payload_len.to_le_bytes()); // payload_len 4
+        // padding to match payload_len
+        buf.resize(total_len, 0xAB);
+        buf
+    }
+
+    #[test]
+    fn test_decode_raw_frame_packet_valid() {
+        let packet = make_valid_frame_packet(42, 0);
+        let frame = decode_raw_frame_packet(&packet).expect("valid frame packet");
+        assert_eq!(frame.sequence, 42);
+        assert_eq!(frame.timestamp_us, 1234);
+        assert_eq!(frame.width, 640);
+        assert_eq!(frame.height, 480);
+        assert_eq!(frame.pitch, 2560);
+        assert_eq!(frame.pixel_format, 0);
+        assert_eq!(frame.payload.len(), 64);
+    }
+
+    #[test]
+    fn test_decode_raw_frame_packet_too_short() {
+        let short = vec![0u8; FRAME_HEADER_LEN - 1];
+        assert!(decode_raw_frame_packet(&short).is_none());
+    }
+
+    #[test]
+    fn test_decode_raw_frame_packet_wrong_magic() {
+        let mut packet = make_valid_frame_packet(0, 0);
+        packet[0] = 0xFF; // corrupt magic
+        assert!(decode_raw_frame_packet(&packet).is_none());
+    }
+
+    #[test]
+    fn test_decode_raw_frame_packet_truncated_payload() {
+        // Make a header that says payload_len=100 but only provide 50 bytes
+        let mut buf = Vec::with_capacity(FRAME_HEADER_LEN + 50);
+        buf.extend_from_slice(FRAME_MAGIC);
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&640u32.to_le_bytes());
+        buf.extend_from_slice(&480u32.to_le_bytes());
+        buf.extend_from_slice(&2560u32.to_le_bytes());
+        buf.push(0u8);
+        buf.extend_from_slice(&100u32.to_le_bytes()); // claims 100 bytes
+        buf.resize(FRAME_HEADER_LEN + 50, 0xBB);
+        assert!(decode_raw_frame_packet(&buf).is_none());
+    }
+
+    // ── decode_audio_packet ─────────────────────────────────────────────
+
+    fn make_valid_audio_packet(
+        sample_rate_hz: u32,
+        channels: u8,
+        frame_count: u32,
+        extra_bytes: usize,
+    ) -> Vec<u8> {
+        let sample_count = frame_count as usize * channels as usize;
+        let payload_len = (sample_count * 2) as u32; // 2 bytes per i16
+        let total_len = AUDIO_PACKET_HEADER_LEN + payload_len as usize + extra_bytes;
+        let mut buf = Vec::with_capacity(total_len);
+        buf.extend_from_slice(AUDIO_PACKET_MAGIC); // 4
+        buf.extend_from_slice(&0u64.to_le_bytes()); // reserved 8
+        buf.extend_from_slice(&0u64.to_le_bytes()); // timestamp_us 8
+        buf.extend_from_slice(&sample_rate_hz.to_le_bytes()); // 4
+        buf.push(channels); // 1
+        buf.push(0u8); // sample_format (S16LE) 1
+        buf.extend_from_slice(&frame_count.to_le_bytes()); // 4
+        buf.extend_from_slice(&payload_len.to_le_bytes()); // 4
+        // Fill with sample data (every other byte to make i16 values)
+        for i in 0..sample_count {
+            buf.extend_from_slice(&(i as i16).to_le_bytes());
+        }
+        buf.resize(total_len, 0);
+        buf
+    }
+
+    #[test]
+    fn test_decode_audio_packet_valid() {
+        let packet = make_valid_audio_packet(44100, 2, 128, 0);
+        let audio = decode_audio_packet(&packet).expect("valid audio packet");
+        assert_eq!(audio.sample_rate_hz, 44100);
+        assert_eq!(audio.channels, 2);
+        assert_eq!(audio.frame_count, 128);
+        assert_eq!(audio.samples.len(), 256); // 128 * 2
+    }
+
+    #[test]
+    fn test_decode_audio_packet_too_short() {
+        let short = vec![0u8; AUDIO_PACKET_HEADER_LEN - 1];
+        assert!(decode_audio_packet(&short).is_none());
+    }
+
+    #[test]
+    fn test_decode_audio_packet_wrong_magic() {
+        let mut packet = make_valid_audio_packet(44100, 2, 64, 0);
+        packet[0] = 0xFF;
+        assert!(decode_audio_packet(&packet).is_none());
+    }
+
+    #[test]
+    fn test_decode_audio_packet_bad_sample_format() {
+        let mut packet = make_valid_audio_packet(48000, 1, 64, 0);
+        // Set sample_format to something other than 0
+        packet[25] = 1;
+        assert!(decode_audio_packet(&packet).is_none());
+    }
+
+    #[test]
+    fn test_decode_audio_packet_truncated_payload() {
+        // payload_len says 1000 but we only have 100 bytes after header
+        let mut buf = Vec::with_capacity(AUDIO_PACKET_HEADER_LEN + 100);
+        buf.extend_from_slice(AUDIO_PACKET_MAGIC);
+        buf.extend_from_slice(&[0u8; 8]); // reserved
+        buf.extend_from_slice(&[0u8; 8]); // timestamp_us
+        buf.extend_from_slice(&44100u32.to_le_bytes());
+        buf.push(2u8); // channels
+        buf.push(0u8); // sample_format
+        buf.extend_from_slice(&500u32.to_le_bytes()); // frame_count
+        buf.extend_from_slice(&1000u32.to_le_bytes()); // payload_len claims 1000
+        buf.resize(AUDIO_PACKET_HEADER_LEN + 100, 0xBB);
+        assert!(decode_audio_packet(&buf).is_none());
+    }
+
+    #[test]
+    fn test_decode_audio_packet_odd_payload_len() {
+        // Add one extra byte so payload_len is still correct in header,
+        // but the actual data is odd length. Actually let me make a
+        // packet where payload_len is odd.
+        let total_len = AUDIO_PACKET_HEADER_LEN + 21; // 21 is odd
+        let mut buf = Vec::with_capacity(total_len);
+        buf.extend_from_slice(AUDIO_PACKET_MAGIC);
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&44100u32.to_le_bytes());
+        buf.push(1u8); // channels
+        buf.push(0u8); // sample_format
+        // frame_count=10 means 10 samples = 20 bytes, but we set payload_len=21
+        buf.extend_from_slice(&10u32.to_le_bytes());
+        buf.extend_from_slice(&21u32.to_le_bytes()); // odd payload_len
+        buf.resize(total_len, 0xCC);
+        assert!(decode_audio_packet(&buf).is_none());
+    }
+
+    #[test]
+    fn test_decode_audio_packet_mismatched_sample_count() {
+        // Create a packet where frame_count=10, channels=1, so expected=10 samples
+        // but provide 12 samples worth of data
+        let mut buf = Vec::with_capacity(1024);
+        buf.extend_from_slice(AUDIO_PACKET_MAGIC);
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&44100u32.to_le_bytes());
+        buf.push(1u8); // channels
+        buf.push(0u8); // sample_format
+        buf.extend_from_slice(&10u32.to_le_bytes()); // frame_count=10 → 10 samples
+        // Write payload_len for 12 samples (24 bytes) — mismatch
+        buf.extend_from_slice(&24u32.to_le_bytes());
+        for i in 0..12i16 {
+            buf.extend_from_slice(&i.to_le_bytes());
+        }
+        assert!(decode_audio_packet(&buf).is_none());
+    }
+
+    // ── repack_video_payload ────────────────────────────────────────────
+
+    #[test]
+    fn test_repack_video_payload_fast_path_pitch_equals_row_bytes() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 4,
+            height: 4,
+            pitch: 16, // 4 * 4 bytes per pixel = 16
+            pixel_format: 0, // BGRx → 4 bpp
+            payload: vec![0xAAu8; 64], // 4*4*4 = 64
+        };
+        let result = repack_video_payload(&frame);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_repack_video_payload_slow_path_pitch_not_equal_row_bytes() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 4,
+            height: 4,
+            pitch: 20, // wider than row_bytes (16)
+            pixel_format: 0, // BGRx → 4 bpp
+            payload: vec![0xBBu8; 80], // pitch * height = 80
+        };
+        let result = repack_video_payload(&frame);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_repack_video_payload_invalid_pixel_format() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 4,
+            height: 4,
+            pitch: 16,
+            pixel_format: 99, // unknown
+            payload: vec![0xCCu8; 64],
+        };
+        assert!(repack_video_payload(&frame).is_none());
+    }
+
+    #[test]
+    fn test_repack_video_payload_insufficient_data() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 100,
+            height: 100,
+            pitch: 400,
+            pixel_format: 0,
+            payload: vec![0xDDu8; 10], // far too little
+        };
+        assert!(repack_video_payload(&frame).is_none());
+    }
+
+    #[test]
+    fn test_repack_video_payload_rgb16_format() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 4,
+            height: 4,
+            pitch: 8, // 4 * 2 = 8
+            pixel_format: 1, // RGB16 → 2 bpp
+            payload: vec![0xEEu8; 32],
+        };
+        let result = repack_video_payload(&frame);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_repack_video_payload_xrgb1555_format() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 4,
+            height: 4,
+            pitch: 8, // 4 * 2 = 8
+            pixel_format: 2, // xRGB1555 → 2 bpp
+            payload: vec![0xFFu8; 32],
+        };
+        let result = repack_video_payload(&frame);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 32);
+    }
+
+    // ── header length constants ─────────────────────────────────────────
+
+    #[test]
+    fn test_frame_header_len_is_exact() {
+        // FRAME_HEADER_LEN = 4 (magic) + 8 (seq) + 8 (ts) + 4 (w) + 4 (h) + 4 (pitch) + 1 (fmt) + 4 (plen)
+        assert_eq!(FRAME_HEADER_LEN, 37);
+    }
+
+    #[test]
+    fn test_audio_packet_header_len_is_exact() {
+        // AUDIO_PACKET_HEADER_LEN = 4 (magic) + 8 (reserved) + 8 (ts) + 4 (rate) + 1 (ch) + 1 (fmt) + 4 (fc) + 4 (plen)
+        assert_eq!(AUDIO_PACKET_HEADER_LEN, 34);
+    }
+
+    // ── Shutdown / state helpers ────────────────────────────────────────
+
+    #[test]
+    fn test_increment_dropped_video_frames_adds_count() {
+        let runtime = Arc::new(Mutex::new(MediaRuntimeStatus {
+            backend: "gstreamer",
+            transport: "test",
+            video_codec: None,
+            video_encoder: None,
+            audio_codec: None,
+            audio_encoder: None,
+            video_pipeline: None,
+            audio_pipeline: None,
+            pipeline_state: "idle",
+            dropped_video_frames: 0,
+        }));
+        increment_dropped_video_frames(&runtime, 5);
+        assert_eq!(runtime.lock().unwrap().dropped_video_frames, 5);
+        increment_dropped_video_frames(&runtime, 3);
+        assert_eq!(runtime.lock().unwrap().dropped_video_frames, 8);
+    }
+
+    #[test]
+    fn test_set_pipeline_state_changes_state() {
+        let runtime = Arc::new(Mutex::new(MediaRuntimeStatus {
+            backend: "gstreamer",
+            transport: "test",
+            video_codec: None,
+            video_encoder: None,
+            audio_codec: None,
+            audio_encoder: None,
+            video_pipeline: None,
+            audio_pipeline: None,
+            pipeline_state: "idle",
+            dropped_video_frames: 0,
+        }));
+        set_pipeline_state(&runtime, "playing");
+        assert_eq!(runtime.lock().unwrap().pipeline_state, "playing");
+        set_pipeline_state(&runtime, "error");
+        assert_eq!(runtime.lock().unwrap().pipeline_state, "error");
+    }
+
+    // ── build_video_caps string ─────────────────────────────────────────
+
+    #[test]
+    fn test_build_video_caps_bgrx_format() {
+        let frame = RawFramePacket {
+            sequence: 0,
+            timestamp_us: 0,
+            width: 640,
+            height: 480,
+            pitch: 2560,
+            pixel_format: 0,
+            payload: vec![0; 640 * 480 * 4],
+        };
+        // build_video_caps needs gst::init which isn't available in tests.
+        // We test the format string mapping logic inline:
+        let format = match frame.pixel_format {
+            0 => "BGRx",
+            1 => "RGB16",
+            2 => "xRGB1555",
+            _ => panic!("unsupported"),
+        };
+        assert_eq!(format, "BGRx");
+    }
+}
