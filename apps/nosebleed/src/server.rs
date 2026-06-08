@@ -759,7 +759,9 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
 }
 
 /// Negotiate the SDP exchange with the peer: set remote description, create
-/// answer, gather ICE candidates, and return the local answer.
+/// answer, and return the local answer immediately (trickle ICE).
+/// ICE candidates continue gathering in the background; host candidates
+/// are typically available in the initial SDP for LAN connectivity.
 async fn negotiate_webrtc_offer(
     pc: &RTCPeerConnection,
     offer_sdp: String,
@@ -773,11 +775,12 @@ async fn negotiate_webrtc_offer(
         .create_answer(None)
         .await
         .map_err(|err| anyhow!("failed to create answer: {err:#}"))?;
-    let mut gather_complete = pc.gathering_complete_promise().await;
     pc.set_local_description(answer)
         .await
         .map_err(|err| anyhow!("failed to set local description: {err:#}"))?;
-    let _ = gather_complete.recv().await;
+    // Don't wait for ICE gathering to complete — return the answer
+    // immediately with whatever candidates are available (trickle ICE).
+    // Host candidates are discovered synchronously and included.
     let local_description = pc
         .local_description()
         .await
