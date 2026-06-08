@@ -28,3 +28,5 @@ pub mod server;
 pub mod session;
 
 pub mod gstreamer_backend;
+
+pub mod hw_render;

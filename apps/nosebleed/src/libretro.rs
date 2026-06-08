@@ -71,11 +71,47 @@ const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: u32 = 54;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: u32 = 55;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: u32 = 67;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: u32 = 68;
+const RETRO_ENVIRONMENT_SET_HW_RENDER: u32 = 36;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ANALOG: u32 = 5;
 const RETRO_LANGUAGE_ENGLISH: u32 = 0;
 const RETRO_MEMORY_SAVE_RAM: u32 = 0;
 const RETRO_NUM_CORE_OPTION_VALUES_MAX: usize = 128;
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetroHwContextType {
+    None_ = 0,
+    OpenGl = 1,
+    OpenGlEs2 = 2,
+    OpenGlCore = 3,
+    OpenGlEs3 = 4,
+    OpenGlEsVersion = 5,
+    Vulkan = 6,
+}
+
+type RetroHwContextReset = unsafe extern "C" fn();
+type RetroHwContextDestroy = unsafe extern "C" fn();
+type RetroHwGetCurrentFramebuffer = unsafe extern "C" fn() -> usize;
+type RetroHwGetProcAddress = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+
+#[repr(C)]
+struct RetroHwRenderCallback {
+    context_type: u32,
+    context_reset: Option<RetroHwContextReset>,
+    context_destroy: Option<RetroHwContextDestroy>,
+    debug_context: bool,
+    depth: bool,
+    stencil: bool,
+    bottom_left_origin: bool,
+    version_major: u32,
+    version_minor: u32,
+    cache_context: bool,
+    get_current_framebuffer: Option<RetroHwGetCurrentFramebuffer>,
+    get_proc_address: Option<RetroHwGetProcAddress>,
+    shared_context: bool,
+    context_destroy_alt: Option<RetroHwContextDestroy>,
+}
 
 #[derive(Debug, Clone)]
 pub struct LibretroRunConfig {
@@ -118,6 +154,7 @@ struct CallbackContext {
     audio_bus: Option<Arc<AudioBus>>,
     input_hub: Option<Arc<InputHub>>,
     pixel_format: PixelFormat,
+    hw_context: Option<Arc<crate::hw_render::HwRenderContext>>,
 }
 
 #[repr(C)]
@@ -965,6 +1002,18 @@ fn run_libretro_unsafe(
         // to have been initialized (retro_init) and a game loaded (retro_load_game).
         unsafe { retro_run() };
 
+        // Read back HW framebuffer after retro_run()
+        {
+            let cb_ctx = callback_context()
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            if let Some(ref hw) = cb_ctx.hw_context {
+                if let Some(ref fs) = cb_ctx.frame_store {
+                    read_hw_framebuffer(hw, fs);
+                }
+            }
+        }
+
         next_frame += frame_interval;
         let now = Instant::now();
         if next_frame > now {
@@ -1000,6 +1049,42 @@ fn run_libretro_unsafe(
     Ok(())
 }
 
+#[link(name = "GL")]
+unsafe extern "C" {
+    fn glReadPixels(x: i32, y: i32, width: i32, height: i32, format: u32, type_: u32, data: *mut c_void);
+    fn glGetIntegerv(pname: u32, data: *mut i32);
+}
+
+const GL_RGBA: u32 = 0x1908;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const GL_VIEWPORT: u32 = 0x0BA2;
+
+fn read_hw_framebuffer(_hw: &crate::hw_render::HwRenderContext, frame_store: &LatestFrameStore) {
+    let mut viewport = [0i32; 4];
+    unsafe { glGetIntegerv(GL_VIEWPORT, viewport.as_mut_ptr()); }
+    let (x, y, w, h) = (viewport[0], viewport[1], viewport[2], viewport[3]);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+
+    let size = (w * h * 4) as usize;
+    let mut pixels = vec![0u8; size];
+    unsafe {
+        glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.as_mut_ptr() as *mut c_void);
+    }
+
+    // OpenGL returns bottom-left origin, flip to top-left for our pipeline
+    let row_bytes = (w * 4) as usize;
+    let mut flipped = vec![0u8; size];
+    for row in 0..h as usize {
+        let src_row = (h as usize - 1 - row) * row_bytes;
+        let dst_row = row * row_bytes;
+        flipped[dst_row..dst_row + row_bytes].copy_from_slice(&pixels[src_row..src_row + row_bytes]);
+    }
+
+    frame_store.publish(w as u32, h as u32, row_bytes, PixelFormat::Xrgb8888, &flipped);
+}
+
 fn clear_callback_context() {
     let mut context = callback_context()
         .lock()
@@ -1008,6 +1093,7 @@ fn clear_callback_context() {
     context.audio_bus = None;
     context.input_hub = None;
     context.pixel_format = PixelFormat::Xrgb8888;
+    context.hw_context = None;
 }
 
 /// # Safety
@@ -1213,8 +1299,84 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
             context.pixel_format = format;
             true
         }
+        RETRO_ENVIRONMENT_SET_HW_RENDER => {
+            if data.is_null() {
+                return false;
+            }
+            let hw = unsafe { &mut *(data as *mut RetroHwRenderCallback) };
+
+            // Use generous defaults for HW render resolution
+            let width = 1280u32;
+            let height = 960u32;
+
+            // Create the EGL context
+            let drm_path = "/dev/dri/renderD128";
+            let ctx = match crate::hw_render::HwRenderContext::create(drm_path, width, height, hw.context_type) {
+                Ok(ctx) => Arc::new(ctx),
+                Err(err) => {
+                    eprintln!("libretro HW render: failed to create EGL context: {err}");
+                    return false;
+                }
+            };
+
+            // Set our callbacks into the core's struct
+            hw.context_reset = Some(hw_context_reset);
+            hw.context_destroy = Some(hw_context_destroy);
+            hw.get_current_framebuffer = Some(hw_get_current_framebuffer);
+            hw.get_proc_address = Some(hw_get_proc_address);
+            hw.bottom_left_origin = false;
+            hw.cache_context = true;
+
+            // Store the context for later readback
+            let mut cb_ctx = callback_context()
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            cb_ctx.hw_context = Some(ctx);
+
+            eprintln!("libretro HW render: EGL context created ({width}x{height})");
+            true
+        }
         _ => false,
     }
+}
+
+/// Called by the core to reset/re-create the GL context.
+unsafe extern "C" fn hw_context_reset() {
+    eprintln!("libretro HW render: context_reset called");
+}
+
+/// Called by the core to destroy the GL context.
+unsafe extern "C" fn hw_context_destroy() {
+    let mut context = callback_context()
+        .lock()
+        .unwrap_or_else(crate::lock_recover);
+    context.hw_context = None;
+    eprintln!("libretro HW render: context destroyed");
+}
+
+/// Called by the core to get the current framebuffer ID.
+unsafe extern "C" fn hw_get_current_framebuffer() -> usize {
+    let context = callback_context()
+        .lock()
+        .unwrap_or_else(crate::lock_recover);
+    context.hw_context.as_ref()
+        .map(|ctx| ctx.get_framebuffer() as usize)
+        .unwrap_or(0)
+}
+
+/// Called by the core to resolve GL function pointers.
+unsafe extern "C" fn hw_get_proc_address(name: *const c_char) -> *mut c_void {
+    let context = callback_context()
+        .lock()
+        .unwrap_or_else(crate::lock_recover);
+    let Some(hw) = &context.hw_context else {
+        return std::ptr::null_mut();
+    };
+    let name_str = match unsafe { std::ffi::CStr::from_ptr(name) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    hw.get_proc_address(name_str)
 }
 
 /// # Safety
