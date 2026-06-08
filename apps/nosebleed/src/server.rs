@@ -21,6 +21,7 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -813,7 +814,13 @@ async fn webrtc_session(
 
 async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnection>> {
     let config = RTCConfiguration {
-        ice_servers: vec![], // host-only — no STUN dependency for LAN
+        ice_servers: vec![RTCIceServer {
+            urls: vec![
+                "stun:stun.l.google.com:19302".to_string(),
+                "stun:stun1.l.google.com:19302".to_string(),
+            ],
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
