@@ -1,3 +1,4 @@
+#![deny(unsafe_op_in_unsafe_fn)]
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_void};
 use std::fs;
@@ -553,82 +554,102 @@ fn set_core_option_default(key: String, default_value: String) {
     }
 }
 
+/// # Safety
+///
+/// `current` must point to a null-terminated array of `RetroVariable` structs
+/// (i.e. the last entry has a null `key`). The pointer must be valid for reads
+/// and properly aligned for `RetroVariable`.
 unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) {
-    unsafe {
-        let mut defaults = core_option_defaults()
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
-        defaults.clear();
+    let mut defaults = core_option_defaults()
+        .lock()
+        .unwrap_or_else(crate::lock_recover);
+    defaults.clear();
 
-        loop {
-            let variable = &*current;
-            if variable.key.is_null() {
-                break;
-            }
+    loop {
+        // SAFETY: current must point to valid, properly aligned RetroVariable structs
+        // in a null-terminated array as documented in the function-level Safety section.
+        let variable = unsafe { &*current };
+        if variable.key.is_null() {
+            break;
+        }
 
-            if let (Some(key), Some(definition)) = (
-                c_string_from_ptr(variable.key),
-                c_string_from_ptr(variable.value),
-            ) {
-                if let Some(default_value) = parse_core_option_default(&definition) {
-                    if let Ok(value) = CString::new(default_value) {
-                        defaults.insert(key, value);
-                    }
+        if let (Some(key), Some(definition)) = (
+            c_string_from_ptr(variable.key),
+            c_string_from_ptr(variable.value),
+        ) {
+            if let Some(default_value) = parse_core_option_default(&definition) {
+                if let Ok(value) = CString::new(default_value) {
+                    defaults.insert(key, value);
                 }
             }
-
-            current = current.add(1);
         }
+
+        // SAFETY: advancing the pointer is safe because the array is null-terminated
+        // and we check for the null terminator before using the value.
+        current = unsafe { current.add(1) };
     }
 }
 
+/// # Safety
+///
+/// `current` must point to a null-terminated array of `RetroCoreOptionDefinition`
+/// structs (last entry has a null `key`). The pointer must be valid for reads
+/// and properly aligned for `RetroCoreOptionDefinition`.
 unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDefinition) {
-    unsafe {
-        core_option_defaults()
-            .lock()
-            .unwrap_or_else(crate::lock_recover)
-            .clear();
+    core_option_defaults()
+        .lock()
+        .unwrap_or_else(crate::lock_recover)
+        .clear();
 
-        loop {
-            let definition = &*current;
-            if definition.key.is_null() {
-                break;
-            }
-
-            if let (Some(key), Some(default_value)) = (
-                c_string_from_ptr(definition.key),
-                c_string_from_ptr(definition.default_value),
-            ) {
-                set_core_option_default(key, default_value);
-            }
-
-            current = current.add(1);
+    loop {
+        // SAFETY: current must point to valid, properly aligned RetroCoreOptionDefinition
+        // structs in a null-terminated array as documented above.
+        let definition = unsafe { &*current };
+        if definition.key.is_null() {
+            break;
         }
+
+        if let (Some(key), Some(default_value)) = (
+            c_string_from_ptr(definition.key),
+            c_string_from_ptr(definition.default_value),
+        ) {
+            set_core_option_default(key, default_value);
+        }
+
+        // SAFETY: advancing the pointer is safe because the array is null-terminated
+        // and we check the null terminator before using each element.
+        current = unsafe { current.add(1) };
     }
 }
 
+/// # Safety
+///
+/// `current` must point to a null-terminated array of `RetroCoreOptionV2Definition`
+/// structs (last entry has a null `key`). The pointer must be valid for reads
+/// and properly aligned for `RetroCoreOptionV2Definition`.
 unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOptionV2Definition) {
-    unsafe {
-        core_option_defaults()
-            .lock()
-            .unwrap_or_else(crate::lock_recover)
-            .clear();
+    core_option_defaults()
+        .lock()
+        .unwrap_or_else(crate::lock_recover)
+        .clear();
 
-        loop {
-            let definition = &*current;
-            if definition.key.is_null() {
-                break;
-            }
-
-            if let (Some(key), Some(default_value)) = (
-                c_string_from_ptr(definition.key),
-                c_string_from_ptr(definition.default_value),
-            ) {
-                set_core_option_default(key, default_value);
-            }
-
-            current = current.add(1);
+    loop {
+        // SAFETY: current must point to valid, properly aligned
+        // RetroCoreOptionV2Definition structs in a null-terminated array.
+        let definition = unsafe { &*current };
+        if definition.key.is_null() {
+            break;
         }
+
+        if let (Some(key), Some(default_value)) = (
+            c_string_from_ptr(definition.key),
+            c_string_from_ptr(definition.default_value),
+        ) {
+            set_core_option_default(key, default_value);
+        }
+
+        // SAFETY: advancing pointer within the null-terminated array.
+        current = unsafe { current.add(1) };
     }
 }
 
@@ -642,10 +663,10 @@ pub fn run_libretro(
 ) -> Result<()> {
     // SAFETY: Function pointers are loaded from a libretro core and invoked with the
     // signatures mandated by the libretro ABI.
-    unsafe { run_libretro_unsafe(config, frame_store, audio_bus, input_hub, shutdown, control) }
+    run_libretro_unsafe(config, frame_store, audio_bus, input_hub, shutdown, control)
 }
 
-unsafe fn run_libretro_unsafe(
+fn run_libretro_unsafe(
     config: LibretroRunConfig,
     frame_store: Arc<LatestFrameStore>,
     audio_bus: Arc<AudioBus>,
@@ -653,9 +674,15 @@ unsafe fn run_libretro_unsafe(
     shutdown: Arc<AtomicBool>,
     control: Arc<RuntimeControl>,
 ) -> Result<()> {
+    // SAFETY: Library::new loads a shared library via dlopen/LoadLibrary, which is
+    // an FFI operation. The caller guarantees `config.core_path` points to a valid
+    // libretro shared library.
     let library = unsafe { Library::new(&config.core_path) }
         .with_context(|| format!("failed to load core library {}", config.core_path.display()))?;
 
+    // SAFETY: load_symbol extracts a function pointer from the loaded library by name.
+    // The caller guarantees that the named symbol exists, has the correct signature,
+    // and that the library remains loaded for the symbol's lifetime.
     let retro_set_environment =
         unsafe { load_symbol::<RetroSetEnvironment>(&library, b"retro_set_environment\0") }?;
     let retro_set_video_refresh =
@@ -702,12 +729,17 @@ unsafe fn run_libretro_unsafe(
         context.pixel_format = PixelFormat::Xrgb8888;
     }
 
+    // SAFETY: retro_set_environment, retro_set_video_refresh, etc. are callback
+    // registration functions. The callbacks (`environment_callback`, etc.) are
+    // safe Rust functions that uphold the libretro callback ABI.
     unsafe { retro_set_environment(environment_callback) };
     unsafe { retro_set_video_refresh(video_refresh_callback) };
     unsafe { retro_set_audio_sample(audio_sample_callback) };
     unsafe { retro_set_audio_sample_batch(audio_sample_batch_callback) };
     unsafe { retro_set_input_poll(input_poll_callback) };
     unsafe { retro_set_input_state(input_state_callback) };
+    // SAFETY: retro_init initializes the libretro core. Must be called once before
+    // any other core operations, and must be paired with a matching retro_deinit.
     unsafe { retro_init() };
 
     // Some cores expose `retro_set_controller_port_device` but are unstable when frontends
@@ -716,7 +748,10 @@ unsafe fn run_libretro_unsafe(
     let mut core_hints: Option<CoreLoadHints> = None;
     if let Some(get_info) = retro_get_system_info {
         let mut info = MaybeUninit::<RetroSystemInfo>::zeroed();
+        // SAFETY: get_info is an optional function pointer from the core, or NULL. We
+        // checked it's Some. The core writes a RetroSystemInfo struct at the given pointer.
         unsafe { get_info(info.as_mut_ptr()) };
+        // SAFETY: We just initialized `info` via the FFI call above.
         let info = unsafe { info.assume_init() };
         eprintln!(
             "Loaded core metadata: need_fullpath={} block_extract={}",
@@ -776,6 +811,8 @@ unsafe fn run_libretro_unsafe(
         None
     };
 
+    // SAFETY: retro_load_game calls into the core to load a game. The RetroGameInfo
+    // struct must contain valid pointers (null for absent fields is fine).
     let loaded = if let Some(content_cstr) = &content_cstr {
         let (data_ptr, data_len) = if let Some(bytes) = &content_bytes {
             (bytes.as_ptr() as *const c_void, bytes.len())
@@ -803,6 +840,8 @@ unsafe fn run_libretro_unsafe(
         } else {
             eprintln!("core rejected load with null content (retro_load_game(NULL))");
         }
+        // SAFETY: retro_deinit tears down the core. Only safe if retro_init was called
+        // first (which it was, above).
         unsafe { retro_deinit() };
         clear_callback_context();
         bail!("core failed to load game/content");
@@ -824,7 +863,10 @@ unsafe fn run_libretro_unsafe(
 
     let (fps, sample_rate_hz) = if let Some(get_av_info) = retro_get_system_av_info {
         let mut av_info = MaybeUninit::<RetroSystemAvInfo>::zeroed();
+        // SAFETY: get_av_info writes a RetroSystemAvInfo struct at the given pointer.
+        // The core guarantees the struct is fully initialized after the call.
         unsafe { get_av_info(av_info.as_mut_ptr()) };
+        // SAFETY: av_info was just initialized by the FFI call above.
         let av_info = unsafe { av_info.assume_init() };
         let fps = if av_info.timing.fps > 1.0 {
             av_info.timing.fps as f32
@@ -853,6 +895,8 @@ unsafe fn run_libretro_unsafe(
             match command {
                 RuntimeCommand::Reset => {
                     if let Some(retro_reset) = retro_reset {
+                        // SAFETY: retro_reset is an optional function checked above.
+                        // Safe as long as the core is initialized and a game is loaded.
                         unsafe { retro_reset() };
                     } else {
                         eprintln!("reset requested, but core does not expose retro_reset");
@@ -917,6 +961,8 @@ unsafe fn run_libretro_unsafe(
             }
         }
 
+        // SAFETY: retro_run executes one frame of the loaded game. Requires the core
+        // to have been initialized (retro_init) and a game loaded (retro_load_game).
         unsafe { retro_run() };
 
         next_frame += frame_interval;
@@ -945,6 +991,8 @@ unsafe fn run_libretro_unsafe(
         }
     }
 
+    // SAFETY: retro_unload_game cleans up the loaded game. retro_deinit tears down
+    // the core. Both are called here after the main loop exits (shutdown signal).
     unsafe { retro_unload_game() };
     unsafe { retro_deinit() };
     clear_callback_context();
@@ -962,23 +1010,57 @@ fn clear_callback_context() {
     context.pixel_format = PixelFormat::Xrgb8888;
 }
 
+/// # Safety
+///
+/// - `library` must be a valid, loaded shared library.
+/// - `name` must be a null-terminated byte string (e.g. `b"symbol_name\0"`).
+/// - `T` must be a valid function pointer type whose signature matches the
+///   exported symbol's type in the shared library. Passing an incorrect type
+///   will cause undefined behaviour when the symbol is called.
 unsafe fn load_symbol<T>(library: &Library, name: &[u8]) -> Result<T>
 where
     T: Copy,
 {
+    // SAFETY: library.get() is unsafe because it may return an invalid symbol.
+    // The caller guarantees the library is loaded and the name is null-terminated.
     let symbol: Symbol<'_, T> = unsafe { library.get(name) }
         .with_context(|| format!("missing symbol {}", String::from_utf8_lossy(name)))?;
     Ok(*symbol)
 }
 
+/// # Safety
+///
+/// Same safety requirements as [`load_symbol`]. Returns `None` if the symbol
+/// does not exist in the library rather than failing.
 unsafe fn load_optional_symbol<T>(library: &Library, name: &[u8]) -> Option<T>
 where
     T: Copy,
 {
+    // SAFETY: Same as load_symbol — library.get() is unsafe. The caller guarantees
+    // the library is loaded and the name is null-terminated.
     let symbol: Symbol<'_, T> = unsafe { library.get(name).ok()? };
     Some(*symbol)
 }
 
+/// Execute a single libretro frame. This is a thin safe wrapper around
+/// the `retro_run()` FFI call.
+///
+/// # Safety
+///
+/// `retro_run` must be a valid function pointer obtained from a loaded libretro
+/// core. The core must have been initialized via `retro_init` and a game loaded
+/// via `retro_load_game` before this is called.
+pub unsafe fn run_libretro_frame(retro_run: RetroRun) {
+    // SAFETY: The caller guarantees retro_run is a valid function pointer from
+    // a loaded libretro core that has been initialized and has a game loaded.
+    unsafe { retro_run() };
+}
+
+/// # Safety
+///
+/// Called by the libretro core via the registered environment callback.
+/// `data` must be a valid, properly aligned pointer for the given `cmd`,
+/// or null where the libretro spec permits it.
 unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
     match cmd {
         RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY => {
@@ -1135,6 +1217,13 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
     }
 }
 
+/// # Safety
+///
+/// Called by the libretro core on every frame. `data` must point to at least
+/// `pitch * height` bytes of pixel data, or be null / the sentinel value
+/// `usize::MAX` (which indicates the previous frame should be duplicated).
+/// `width`, `height`, and `pitch` must be consistent with the pixel format
+/// the core is using.
 unsafe extern "C" fn video_refresh_callback(
     data: *const c_void,
     width: u32,
@@ -1172,6 +1261,10 @@ unsafe extern "C" fn video_refresh_callback(
     frame_store.publish(width, height, pitch, pixel_format, bytes);
 }
 
+/// # Safety
+///
+/// Called by the libretro core to push a single stereo audio sample.
+/// `left` and `right` are signed 16-bit PCM samples.
 unsafe extern "C" fn audio_sample_callback(left: i16, right: i16) {
     let audio_bus = {
         let context = callback_context()
@@ -1186,6 +1279,11 @@ unsafe extern "C" fn audio_sample_callback(left: i16, right: i16) {
     audio_bus.push_interleaved_stereo_i16(&[left, right]);
 }
 
+/// # Safety
+///
+/// Called by the libretro core to push a batch of audio samples.
+/// `data` must point to at least `frames * 2` valid `i16` values
+/// (interleaved stereo pairs). `frames` is the number of stereo frames.
 unsafe extern "C" fn audio_sample_batch_callback(data: *const i16, frames: usize) -> usize {
     if data.is_null() || frames == 0 {
         return 0;
@@ -1207,8 +1305,17 @@ unsafe extern "C" fn audio_sample_batch_callback(data: *const i16, frames: usize
     frames
 }
 
+/// # Safety
+///
+/// Called by the libretro core to poll input state before reading input.
+/// This function is part of the libretro input ABI and should only be
+/// called from within a `retro_run` invocation by the core.
 unsafe extern "C" fn input_poll_callback() {}
 
+/// # Safety
+///
+/// Called by the libretro core to read input device state. `port`, `device`,
+/// `index`, and `id` follow the libretro input API specification.
 unsafe extern "C" fn input_state_callback(port: u32, device: u32, index: u32, id: u32) -> i16 {
     let input_hub = {
         let context = callback_context()
