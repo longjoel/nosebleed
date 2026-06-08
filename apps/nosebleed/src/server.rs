@@ -208,6 +208,7 @@ pub async fn run(state: ServerState, listen_addr: SocketAddr) -> Result<()> {
         .route("/session/status", get(session_status))
         .route("/session/start", post(session_start))
         .route("/session/stop", post(session_stop))
+        .route("/session/snapshot", get(session_snapshot))
         .route("/api/arcade/overview", get(arcade_overview))
         .route("/api/arcade/machines/{id}", get(arcade_machine))
         .route(
@@ -283,6 +284,84 @@ async fn session_start(
 
 async fn session_stop(State(state): State<ServerState>) -> Json<SessionStatus> {
     Json(state.session_manager.stop())
+}
+
+async fn session_snapshot(State(state): State<ServerState>) -> Response {
+    let Some(packet) = state.video_rx.borrow().clone() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no frame available").into_response();
+    };
+    let Some(frame) = crate::gstreamer_backend::decode_raw_frame_packet(&packet) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "failed to decode frame").into_response();
+    };
+
+    let (width, height) = (frame.width as u32, frame.height as u32);
+    let pixels_per_row = frame.width as usize;
+
+    // Convert raw pixel data to RGB based on pixel format
+    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+    match frame.pixel_format {
+        // BGRx → RGB (skip 4th byte)
+        0 => {
+            for y in 0..height as usize {
+                let row_start = y * frame.pitch;
+                for x in 0..pixels_per_row {
+                    let off = row_start + x * 4;
+                    if off + 3 < frame.payload.len() {
+                        rgb.push(frame.payload[off + 2]); // R
+                        rgb.push(frame.payload[off + 1]); // G
+                        rgb.push(frame.payload[off]);     // B
+                    }
+                }
+            }
+        }
+        // RGB16 (5-6-5) → RGB (8-8-8)
+        1 => {
+            for y in 0..height as usize {
+                let row_start = y * frame.pitch;
+                for x in 0..pixels_per_row {
+                    let off = row_start + x * 2;
+                    if off + 1 < frame.payload.len() {
+                        let pixel = u16::from_le_bytes([frame.payload[off], frame.payload[off + 1]]);
+                        rgb.push(((pixel >> 11) as u8) << 3); // R 5→8
+                        rgb.push((((pixel >> 5) & 0x3F) as u8) << 2); // G 6→8
+                        rgb.push(((pixel & 0x1F) as u8) << 3); // B 5→8
+                    }
+                }
+            }
+        }
+        // xRGB1555 (1-5-5-5) → RGB (8-8-8)
+        2 => {
+            for y in 0..height as usize {
+                let row_start = y * frame.pitch;
+                for x in 0..pixels_per_row {
+                    let off = row_start + x * 2;
+                    if off + 1 < frame.payload.len() {
+                        let pixel = u16::from_le_bytes([frame.payload[off], frame.payload[off + 1]]);
+                        rgb.push((((pixel >> 10) & 0x1F) as u8) << 3); // R 5→8
+                        rgb.push((((pixel >> 5) & 0x1F) as u8) << 3);  // G 5→8
+                        rgb.push(((pixel & 0x1F) as u8) << 3);          // B 5→8
+                    }
+                }
+            }
+        }
+        _ => return (StatusCode::INTERNAL_SERVER_ERROR, "unsupported pixel format").into_response(),
+    }
+
+    match image::RgbImage::from_raw(width, height, rgb) {
+        Some(img) => {
+            let mut png_bytes = std::io::Cursor::new(Vec::new());
+            if img.write_to(&mut png_bytes, image::ImageFormat::Png).is_err() {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "png encode failed").into_response();
+            }
+            (
+                StatusCode::OK,
+                [("content-type", "image/png")],
+                png_bytes.into_inner(),
+            )
+                .into_response()
+        }
+        None => (StatusCode::INTERNAL_SERVER_ERROR, "invalid frame dimensions").into_response(),
+    }
 }
 
 async fn arcade_overview(State(state): State<ServerState>) -> Response {

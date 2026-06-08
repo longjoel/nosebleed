@@ -400,14 +400,14 @@ fn increment_dropped_video_frames(runtime: &Arc<Mutex<MediaRuntimeStatus>>, coun
 }
 
 #[derive(Debug, Clone)]
-struct RawFramePacket {
-    sequence: u64,
-    timestamp_us: u64,
-    width: u32,
-    height: u32,
-    pitch: usize,
-    pixel_format: u8,
-    payload: Vec<u8>,
+pub(crate) struct RawFramePacket {
+    pub(crate) sequence: u64,
+    pub(crate) timestamp_us: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pitch: usize,
+    pub(crate) pixel_format: u8,
+    pub(crate) payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -421,7 +421,7 @@ struct AudioPacket {
     samples: Vec<i16>,
 }
 
-fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
+pub(crate) fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
     if packet.len() < FRAME_HEADER_LEN || &packet[..4] != FRAME_MAGIC {
         return None;
     }
