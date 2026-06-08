@@ -38,3 +38,4 @@ webrtc-util = "0.10.0"
 
 [features]
 default = []
+integration = []

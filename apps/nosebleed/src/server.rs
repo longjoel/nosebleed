@@ -1217,3 +1217,466 @@ impl InputSessionRegistry {
             .retain(|_, owner| owner.reconnect_until.is_none_or(|until| until > now));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::watch;
+
+    use crate::arcade::ArcadeService;
+    use crate::audio::AudioBus;
+    use crate::frame::LatestFrameStore;
+    use crate::input::InputHub;
+    use crate::media::{
+        EncoderReport, GstreamerCapabilities, GstreamerElements, MediaBackend, MediaCapabilities,
+        MediaConfig, MediaRuntimeStatus, VideoEncoderConfig,
+    };
+    use crate::session::{LaunchConfig, SessionManager, WorkspaceConfig};
+
+    // ── helpers ────────────────────────────────────────────────────────────
+
+    fn dummy_auth_config(require_auth: bool) -> AuthConfig {
+        AuthConfig {
+            require_auth,
+            secret: if require_auth {
+                Some(Arc::<[u8]>::from(b"test-secret".to_vec()))
+            } else {
+                None
+            },
+            reconnect_window: Duration::from_secs(30),
+        }
+    }
+
+    fn dummy_server_state(auth: AuthConfig) -> ServerState {
+        let (_, video_rx) = watch::channel(None::<Arc<[u8]>>);
+        let (audio_tx, _) = tokio::sync::broadcast::channel(8);
+
+        let session_manager = Arc::new(SessionManager::new(
+            Arc::new(LatestFrameStore::default()),
+            Arc::new(AudioBus::new(44100, 8)),
+            Arc::new(InputHub::default()),
+            LaunchConfig {
+                core: None,
+                content: None,
+                fps: 60.0,
+                width: 640,
+                height: 480,
+                workspace: WorkspaceConfig::default(),
+            },
+        ));
+
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().ok();
+        let webrtc_api = Arc::new(APIBuilder::new().with_media_engine(media_engine).build());
+
+        ServerState {
+            video_rx,
+            media_config: MediaConfig {
+                selected_backend: MediaBackend::Gstreamer,
+                video_encoder: VideoEncoderConfig::default(),
+            },
+            media_capabilities: Arc::new(MediaCapabilities {
+                selected_backend: MediaBackend::Gstreamer,
+                gstreamer: GstreamerCapabilities {
+                    compiled_in: false,
+                    available_for_runtime: false,
+                    init_ok: false,
+                    version: None,
+                    missing_reason: None,
+                    elements: GstreamerElements {
+                        appsrc: false,
+                        webrtcbin: false,
+                        opusenc: false,
+                        rtpopuspay: false,
+                        vp8enc: false,
+                        x264enc: false,
+                        nvh264enc: false,
+                        qsvh264enc: false,
+                        vaapih264enc: false,
+                        v4l2h264enc: false,
+                    },
+                },
+                runtime: MediaRuntimeStatus {
+                    backend: "gstreamer",
+                    transport: "webrtc",
+                    video_codec: None,
+                    video_encoder: None,
+                    audio_codec: None,
+                    audio_encoder: None,
+                    video_pipeline: None,
+                    audio_pipeline: None,
+                    pipeline_state: "idle",
+                    dropped_video_frames: 0,
+                },
+                encoders: EncoderReport {
+                    selected: None,
+                    candidates: vec![],
+                    selection_reason: None,
+                },
+            }),
+            gstreamer_media: None,
+            audio_tx,
+            input_hub: Arc::new(InputHub::default()),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            next_client_id: Arc::new(AtomicU64::new(0)),
+            auth: Arc::new(auth),
+            session_manager,
+            arcade: Arc::new(ArcadeService::new(1)),
+            turn_credential: "test-credential".to_string(),
+            input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
+            rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            webrtc_api,
+        }
+    }
+
+    async fn dummy_peer_connection(state: &ServerState) -> Arc<RTCPeerConnection> {
+        let config = RTCConfiguration {
+            ice_servers: vec![],
+            ..Default::default()
+        };
+        let pc = state
+            .webrtc_api
+            .new_peer_connection(config)
+            .await
+            .expect("create dummy peer connection");
+        Arc::new(pc)
+    }
+
+    // ── 1. Invalid SDP parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn test_invalid_sdp_parsing() {
+        let result = RTCSessionDescription::offer("this is not valid sdp".to_string());
+        assert!(result.is_err(), "garbage SDP should fail to parse");
+    }
+
+    // ── 2. WebRTC offer kind validation ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_webrtc_offer_kind_validation() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let offer = WebRtcOffer {
+            kind: "answer".to_string(),
+            sdp: "dummy".to_string(),
+            video_mode: None,
+        };
+
+        let response = webrtc_session(
+            axum::extract::Query(WsQuery { token: None }),
+            axum::extract::State(state),
+            axum::extract::Json(offer),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── 3. Token / authorization: no auth required ─────────────────────────
+
+    #[test]
+    fn test_authorize_stream_claims_no_auth_no_token() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let result = authorize_stream_claims(&state, None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "should return None claims");
+    }
+
+    // ── 4. Token / authorization: missing token with auth required ─────────
+
+    #[test]
+    fn test_authorize_stream_claims_missing_token() {
+        let state = dummy_server_state(dummy_auth_config(true));
+        let result = authorize_stream_claims(&state, None);
+        assert!(result.is_err());
+        // We can't easily inspect the Response — verify it's an error
+        assert!(
+            result.is_err_and(|r| r.status() == StatusCode::UNAUTHORIZED),
+            "missing token with auth required should be 401"
+        );
+    }
+
+    // ── 5. Token / authorization: invalid token ────────────────────────────
+
+    #[test]
+    fn test_authorize_stream_claims_invalid_token() {
+        let state = dummy_server_state(dummy_auth_config(true));
+        let result = authorize_stream_claims(&state, Some("not.a.real.token"));
+        assert!(
+            result.is_err(),
+            "invalid token should be rejected"
+        );
+    }
+
+    // ── 6. SessionCleanup: armed drop cleans up session ────────────────────
+
+    #[tokio::test]
+    async fn test_session_cleanup_armed_removes_session() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let cleanup_once = Arc::new(AtomicBool::new(false));
+        let session_id = 42u64;
+
+        // Insert a dummy entry into rtc_sessions
+        {
+            let pc = dummy_peer_connection(&state).await;
+            let mut sessions = state
+                .rtc_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            sessions.insert(session_id, pc);
+            assert!(
+                sessions.contains_key(&session_id),
+                "session should be present before cleanup"
+            );
+        }
+
+        // Drop the guard while armed
+        {
+            let _guard = SessionCleanup {
+                state: &state,
+                source_id: "test-source-1",
+                session_id,
+                cleanup_once: &cleanup_once,
+                armed: true,
+            };
+            // guard drops here → should call cleanup
+        }
+
+        // Verify the session was removed from rtc_sessions
+        {
+            let sessions = state
+                .rtc_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            assert!(
+                !sessions.contains_key(&session_id),
+                "armed SessionCleanup Drop should remove session from registry"
+            );
+        }
+
+        // Verify cleanup_once was fired (swap to true)
+        assert!(
+            cleanup_once.load(Ordering::Relaxed),
+            "armed SessionCleanup Drop should set cleanup_once"
+        );
+    }
+
+    // ── 7. SessionCleanup: disarmed drop is a no-op ────────────────────────
+
+    #[tokio::test]
+    async fn test_session_cleanup_disarmed_noop() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let cleanup_once = Arc::new(AtomicBool::new(false));
+        let session_id = 99u64;
+
+        // Insert a dummy entry into rtc_sessions
+        {
+            let pc = dummy_peer_connection(&state).await;
+            let mut sessions = state
+                .rtc_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            sessions.insert(session_id, pc);
+        }
+
+        // Drop the guard after disarming
+        {
+            let guard = SessionCleanup {
+                state: &state,
+                source_id: "test-source-2",
+                session_id,
+                cleanup_once: &cleanup_once,
+                armed: true,
+            };
+            guard.disarm(); // disarms — now drop should be a no-op
+        }
+
+        // Verify the session is STILL present
+        {
+            let sessions = state
+                .rtc_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            assert!(
+                sessions.contains_key(&session_id),
+                "disarmed SessionCleanup Drop should NOT remove session"
+            );
+        }
+
+        // Verify cleanup_once was NOT fired
+        assert!(
+            !cleanup_once.load(Ordering::Relaxed),
+            "disarmed SessionCleanup Drop should NOT set cleanup_once"
+        );
+    }
+
+    // ── 8. cleanup_input_source_once: second call is skipped ───────────────
+
+    #[test]
+    fn test_cleanup_input_source_once_second_call_skipped() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let cleanup_once = Arc::new(AtomicBool::new(false));
+
+        // First call — should fire
+        cleanup_input_source_once(&state, "test-source", &cleanup_once);
+        assert!(
+            cleanup_once.load(Ordering::Relaxed),
+            "first call should set cleanup_once"
+        );
+
+        // Reset the once flag to prove second call doesn't re-trigger
+        // (We can't reset — the guard is designed to fire exactly once.
+        //  We verify the swap prevented re-entry by checking the old value.)
+        let old = cleanup_once.swap(false, Ordering::Relaxed);
+        assert!(old, "cleanup_once should have been true before reset");
+
+        // Now call again — should skip because old value was false after reset.
+        // Actually, the pattern is: if swap(true) returns true, skip.
+        // After reset to false, the next call would find false → fire again.
+        // The real test: call twice in a row without reset.
+        let flag = Arc::new(AtomicBool::new(false));
+        cleanup_input_source_once(&state, "test-source-a", &flag);
+        assert!(flag.load(Ordering::Relaxed), "first call fires");
+
+        // Second call — swap(true) returns true → skip
+        cleanup_input_source_once(&state, "test-source-b", &flag);
+        // flag is still true — verify it wasn't toggled off
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "flag should remain true after second call"
+        );
+    }
+
+    // ── 9. cleanup_input_source_once: first call fires cleanup ─────────────
+
+    #[test]
+    fn test_cleanup_input_source_triggers_cleanup() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let cleanup_once = Arc::new(AtomicBool::new(false));
+
+        // Reserve a port first so cleanup has something to clean
+        {
+            let mut registry = state
+                .input_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            registry
+                .reserve_ports("cleanup-test", "player-1", &[0], Duration::from_secs(30))
+                .expect("reserve port");
+        }
+
+        // Run cleanup
+        cleanup_input_source(&state, "cleanup-test");
+
+        // Verify the source was removed from the registry
+        {
+            let registry = state
+                .input_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            // After cleanup, the port should be marked with reconnect_until set
+            // (since reconnect_window > 0, it's not removed, just marked)
+            if let Some(owner) = registry.per_port.get(&0) {
+                assert!(
+                    owner.reconnect_until.is_some(),
+                    "port should have reconnect_until set after cleanup"
+                );
+                assert_eq!(owner.source_id, "cleanup-test");
+            } else {
+                panic!("port 0 should still exist with reconnect window");
+            }
+        }
+
+        // Run the once-guarded version
+        cleanup_input_source_once(&state, "cleanup-test", &cleanup_once);
+        assert!(
+            cleanup_once.load(Ordering::Relaxed),
+            "first call should fire"
+        );
+
+        // Second call with once guard should not re-trigger
+        cleanup_input_source_once(&state, "cleanup-test", &cleanup_once);
+        assert!(
+            cleanup_once.load(Ordering::Relaxed),
+            "flag should still be true after second call"
+        );
+    }
+
+    // ── 10. InputSessionRegistry: reserve ports ────────────────────────────
+
+    #[test]
+    fn test_input_session_registry_reserve_ports() {
+        let mut registry = InputSessionRegistry::default();
+
+        registry
+            .reserve_ports("source-1", "player-1", &[0, 1], Duration::from_secs(30))
+            .expect("reserve ports");
+
+        assert_eq!(registry.per_port.len(), 2);
+        assert_eq!(registry.per_port.get(&0).unwrap().player_id, "player-1");
+        assert_eq!(registry.per_port.get(&1).unwrap().player_id, "player-1");
+
+        // Same player, different source — should succeed (auto-release old)
+        registry
+            .reserve_ports("source-2", "player-1", &[0], Duration::from_secs(30))
+            .expect("same player re-reserve");
+        assert_eq!(
+            registry.per_port.get(&0).unwrap().source_id,
+            "source-2",
+            "port should transfer to new source for same player"
+        );
+
+        // Different player — should fail
+        let result = registry.reserve_ports(
+            "source-3",
+            "player-2",
+            &[1],
+            Duration::from_secs(30),
+        );
+        assert!(
+            result.is_err(),
+            "different player should fail to reserve occupied port"
+        );
+    }
+
+    // ── 11. InputSessionRegistry: reconnect window ─────────────────────────
+
+    #[test]
+    fn test_input_session_registry_mark_disconnected_reconnect() {
+        let mut registry = InputSessionRegistry::default();
+
+        registry
+            .reserve_ports("source-1", "player-1", &[0, 1], Duration::from_secs(30))
+            .expect("reserve");
+
+        registry.mark_disconnected("source-1", Duration::from_secs(60));
+
+        let owner0 = registry.per_port.get(&0).unwrap();
+        assert!(
+            owner0.reconnect_until.is_some(),
+            "should have reconnect window"
+        );
+        assert_eq!(owner0.source_id, "source-1");
+
+        // Source owner check should fail during reconnect window
+        assert!(
+            !registry.is_source_owner("source-1", 0),
+            "source should not own port during reconnect window"
+        );
+    }
+
+    // ── 12. negotiate_webrtc_offer with invalid SDP (integration) ──────────
+
+    #[cfg_attr(not(feature = "integration"), ignore)]
+    #[tokio::test]
+    async fn test_negotiate_webrtc_offer_invalid_sdp() {
+        let state = dummy_server_state(dummy_auth_config(false));
+        let pc = dummy_peer_connection(&state).await;
+
+        let result = negotiate_webrtc_offer(&pc, "not a valid sdp".to_string()).await;
+        assert!(
+            result.is_err(),
+            "negotiate_webrtc_offer with garbage SDP should fail"
+        );
+    }
+}
