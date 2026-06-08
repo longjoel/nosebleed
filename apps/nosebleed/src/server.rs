@@ -396,13 +396,17 @@ async fn webrtc_session(
     State(state): State<ServerState>,
     Json(offer): Json<WebRtcOffer>,
 ) -> Response {
+    eprintln!("webrtc_session: offer.kind={} sdp_len={}", offer.kind, offer.sdp.len());
     if offer.kind != "offer" {
         return (StatusCode::BAD_REQUEST, "sdp type must be offer").into_response();
     }
 
     let claims = match authorize_stream_claims(&state, query.token.as_deref()) {
         Ok(claims) => claims,
-        Err(response) => return response,
+        Err(response) => {
+            eprintln!("webrtc_session: auth failed");
+            return response;
+        }
     };
     let input_allowed = claims
         .as_ref()
@@ -729,24 +733,32 @@ async fn webrtc_session(
 }
 
 async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnection>> {
+    let mut ice_servers = vec![
+        RTCIceServer {
+            urls: vec![
+                "stun:stun.l.google.com:19302".to_string(),
+                "stun:stun1.l.google.com:19302".to_string(),
+            ],
+            ..Default::default()
+        },
+    ];
+
+    // Only include TURN server when a credential is configured.
+    // An empty credential causes webrtc-rs to reject the config
+    // with "turn server credentials required".
+    if !state.turn_credential.is_empty() {
+        ice_servers.push(RTCIceServer {
+            urls: vec![
+                "turns:lngnckr.tech:443?transport=tcp".to_string(),
+                "turns:lngnckr.tech:5349?transport=tcp".to_string(),
+            ],
+            username: "nosebleed".to_string(),
+            credential: state.turn_credential.clone(),
+        });
+    }
+
     let config = RTCConfiguration {
-        ice_servers: vec![
-            RTCIceServer {
-                urls: vec![
-                    "stun:stun.l.google.com:19302".to_string(),
-                    "stun:stun1.l.google.com:19302".to_string(),
-                ],
-                ..Default::default()
-            },
-            RTCIceServer {
-                urls: vec![
-                    "turns:lngnckr.tech:443?transport=tcp".to_string(),
-                    "turns:lngnckr.tech:5349?transport=tcp".to_string(),
-                ],
-                username: "nosebleed".to_string(),
-                credential: state.turn_credential.clone(),
-            },
-        ],
+        ice_servers,
         ..Default::default()
     };
 
