@@ -280,6 +280,10 @@ async fn feed_audio_appsrc(
     runtime: Arc<Mutex<MediaRuntimeStatus>>,
 ) {
     let mut last_caps_key = None::<(u32, u8)>;
+    // Track sequence-anchored PTS to avoid burst-timestamping (do-timestamp=true
+    // would assign nearly identical timestamps to every buffer in a rapid burst).
+    let mut base_sequence: Option<u64> = None;
+    let frames_per_chunk: u64 = 512; // matches AudioBus::CHUNK_FRAMES
 
     while let Ok(packet) = audio_rx.recv().await {
         let Some(audio) = decode_audio_packet(packet.as_ref()) else {
@@ -309,6 +313,23 @@ async fn feed_audio_appsrc(
                 .saturating_div(audio.sample_rate_hz.max(1) as u64)
                 .max(1);
             buffer_mut.set_duration(gst::ClockTime::from_useconds(duration_us));
+
+            // Set explicit PTS from the sequence counter so downstream can schedule
+            // buffers correctly even when they arrive in bursts from the broadcast
+            // channel. Each chunk is frames_per_chunk frames independent of sample rate.
+            let sample_rate = audio.sample_rate_hz.max(1) as u64;
+            let chunk_duration_ns = frames_per_chunk * 1_000_000_000 / sample_rate;
+            let pts_ns = match base_sequence {
+                Some(base_seq) => {
+                    let seq_offset = audio.sequence.wrapping_sub(base_seq);
+                    seq_offset.saturating_mul(chunk_duration_ns)
+                }
+                None => {
+                    base_sequence = Some(audio.sequence);
+                    0
+                }
+            };
+            buffer_mut.set_pts(gst::ClockTime::from_nseconds(pts_ns));
         }
 
         if let Err(err) = audio_src.push_buffer(buffer) {
@@ -391,6 +412,7 @@ struct RawFramePacket {
 
 #[derive(Debug, Clone)]
 struct AudioPacket {
+    sequence: u64,
     #[allow(dead_code)]
     timestamp_us: u64,
     sample_rate_hz: u32,
@@ -431,6 +453,7 @@ fn decode_audio_packet(packet: &[u8]) -> Option<AudioPacket> {
         return None;
     }
 
+    let sequence = le_u64(&packet[4..12]);
     let timestamp_us = le_u64(&packet[12..20]);
     let sample_rate_hz = le_u32(&packet[20..24]);
     let channels = packet[24].max(1);
@@ -456,6 +479,7 @@ fn decode_audio_packet(packet: &[u8]) -> Option<AudioPacket> {
     }
 
     Some(AudioPacket {
+        sequence,
         timestamp_us,
         sample_rate_hz,
         channels,
@@ -601,7 +625,7 @@ mod tests {
         let total_len = AUDIO_PACKET_HEADER_LEN + payload_len as usize + extra_bytes;
         let mut buf = Vec::with_capacity(total_len);
         buf.extend_from_slice(AUDIO_PACKET_MAGIC); // 4
-        buf.extend_from_slice(&0u64.to_le_bytes()); // reserved 8
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sequence 8
         buf.extend_from_slice(&0u64.to_le_bytes()); // timestamp_us 8
         buf.extend_from_slice(&sample_rate_hz.to_le_bytes()); // 4
         buf.push(channels); // 1
@@ -620,6 +644,7 @@ mod tests {
     fn test_decode_audio_packet_valid() {
         let packet = make_valid_audio_packet(44100, 2, 128, 0);
         let audio = decode_audio_packet(&packet).expect("valid audio packet");
+        assert_eq!(audio.sequence, 0);
         assert_eq!(audio.sample_rate_hz, 44100);
         assert_eq!(audio.channels, 2);
         assert_eq!(audio.frame_count, 128);
