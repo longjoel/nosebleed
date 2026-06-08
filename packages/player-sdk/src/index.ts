@@ -737,40 +737,21 @@ function waitForIceGatheringComplete(peer: RTCPeerConnection): Promise<void> {
   if (peer.iceGatheringState === "complete") {
     return Promise.resolve();
   }
-  // If we already have host candidates (they're collected synchronously),
-  // don't wait for TURN/STUN candidates — return immediately.
-  const sdp = peer.localDescription?.sdp ?? "";
-  if (sdp.includes("a=candidate")) {
-    return Promise.resolve();
-  }
 
   return new Promise((resolve) => {
     const timeout = window.setTimeout(() => {
-      peer.removeEventListener("icecandidate", onCandidate);
       peer.removeEventListener("icegatheringstatechange", onState);
       resolve();
-    }, 500);
-
-    const onCandidate = (event: RTCPeerConnectionIceEvent): void => {
-      if (event.candidate) {
-        // Got our first ICE candidate (typically host) — good enough to start
-        window.clearTimeout(timeout);
-        peer.removeEventListener("icecandidate", onCandidate);
-        peer.removeEventListener("icegatheringstatechange", onState);
-        resolve();
-      }
-    };
+    }, 1800);
 
     const onState = (): void => {
       if (peer.iceGatheringState === "complete") {
         window.clearTimeout(timeout);
-        peer.removeEventListener("icecandidate", onCandidate);
         peer.removeEventListener("icegatheringstatechange", onState);
         resolve();
       }
     };
 
-    peer.addEventListener("icecandidate", onCandidate);
     peer.addEventListener("icegatheringstatechange", onState);
   });
 }
