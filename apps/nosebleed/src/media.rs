@@ -418,9 +418,10 @@ impl GstreamerPipelineSpec {
             "appsrc name=audio_src is-live=true format=time do-timestamp=false ",
             "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=120000000 ",
             "! audioconvert ! audioresample ",
-            "! opusenc audio-type=restricted-lowdelay frame-size=20 bitrate=64000 inband-fec=true packet-loss-percentage=15 ",
+            "! opusenc audio-type=restricted-lowdelay frame-size=20 bitrate=64000 inband-fec=true packet-loss-percentage=10 ",
             "! rtpopuspay pt=111 ",
-            "! appsink name=audio_sink sync=false async=false drop=true max-buffers=32 emit-signals=true"
+            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=200000000 ",
+            "! appsink name=audio_sink sync=false async=false drop=true max-buffers=64 emit-signals=true"
         )
         .to_string()
     }
