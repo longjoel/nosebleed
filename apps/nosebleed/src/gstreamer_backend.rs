@@ -75,7 +75,7 @@ impl SharedGstreamerMedia {
                 mime_type: MIME_TYPE_OPUS.to_owned(),
                 clock_rate: 48_000,
                 channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=0".to_string(),
+                sdp_fmtp_line: "minptime=10;useinbandfec=1;sprop-maxcapturerate=48000".to_string(),
                 ..Default::default()
             },
             "audio".to_owned(),
