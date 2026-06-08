@@ -137,7 +137,7 @@ impl SharedGstreamerMedia {
     pub fn snapshot(&self) -> MediaRuntimeStatus {
         self.runtime
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(crate::lock_recover)
             .clone()
     }
 }
@@ -367,14 +367,14 @@ fn repack_video_payload(frame: &RawFramePacket) -> Option<Vec<u8>> {
 fn set_pipeline_state(runtime: &Arc<Mutex<MediaRuntimeStatus>>, pipeline_state: &'static str) {
     let mut guard = runtime
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(crate::lock_recover);
     guard.pipeline_state = pipeline_state;
 }
 
 fn increment_dropped_video_frames(runtime: &Arc<Mutex<MediaRuntimeStatus>>, count: u64) {
     let mut guard = runtime
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(crate::lock_recover);
     guard.dropped_video_frames = guard.dropped_video_frames.saturating_add(count);
 }
 

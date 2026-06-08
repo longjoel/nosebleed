@@ -79,7 +79,7 @@ impl LatestFrameStore {
         let mut guard = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let sequence = guard.next_sequence;
         guard.next_sequence = guard.next_sequence.wrapping_add(1);
 
@@ -103,7 +103,7 @@ impl LatestFrameStore {
         let mut guard = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
 
         if let Some(frame) = guard.latest.as_ref() {
             if last_sequence.is_none_or(|last| frame.sequence > last) {
@@ -114,7 +114,7 @@ impl LatestFrameStore {
         let (guard_after_wait, _) = self
             .available
             .wait_timeout(guard, timeout)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         guard = guard_after_wait;
 
         guard.latest.as_ref().and_then(|frame| {

@@ -54,7 +54,7 @@ impl AudioBus {
             let mut guard = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
 
             guard
                 .pending_samples

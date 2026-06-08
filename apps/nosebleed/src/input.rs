@@ -282,7 +282,7 @@ impl InputHub {
         let mut guard = self
             .state
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let source_map = guard.per_port.entry(port).or_default();
         let entry = source_map.entry(source.to_owned()).or_default();
 
@@ -314,7 +314,7 @@ impl InputHub {
         let mut guard = self
             .state
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let source_map = guard.per_port.entry(port).or_default();
         let entry = source_map.entry(source.to_owned()).or_default();
         entry.updated_at = Instant::now();
@@ -328,7 +328,7 @@ impl InputHub {
         let mut guard = self
             .state
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let mut empty_ports = Vec::new();
 
         for (port, map) in &mut guard.per_port {
@@ -376,7 +376,7 @@ impl InputHub {
         let guard = self
             .state
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
 
         let Some(sources) = guard.per_port.get(&port) else {
             return merged;

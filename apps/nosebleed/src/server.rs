@@ -426,7 +426,7 @@ async fn webrtc_session(
                 let mut registry = state
                     .input_sessions
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(crate::lock_recover);
                 registry.reserve_ports(
                     &source_id,
                     &claims.player_id,
@@ -581,7 +581,7 @@ async fn webrtc_session(
         let mut sessions = state
             .rtc_sessions
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         sessions.insert(rtc_session_id, peer_connection.clone());
     }
 
@@ -602,7 +602,7 @@ async fn webrtc_session(
                         let mut sessions = state_for_close
                             .rtc_sessions
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            .unwrap_or_else(crate::lock_recover);
                         sessions.remove(&rtc_session_id);
                     }
                     cleanup_input_source_once(
@@ -711,7 +711,7 @@ async fn webrtc_session(
                 let mut sessions = state
                     .rtc_sessions
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(crate::lock_recover);
                 sessions.remove(&rtc_session_id);
             }
             cleanup_input_source_once(&state, &source_id, &cleanup_once);
@@ -732,7 +732,7 @@ async fn webrtc_session(
             let mut sessions = state
                 .rtc_sessions
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             sessions.remove(&rtc_session_id);
         }
         cleanup_input_source_once(&state, &source_id, &cleanup_once);
@@ -751,7 +751,7 @@ async fn webrtc_session(
                 let mut sessions = state
                     .rtc_sessions
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(crate::lock_recover);
                 sessions.remove(&rtc_session_id);
             }
             cleanup_input_source_once(&state, &source_id, &cleanup_once);
@@ -770,7 +770,7 @@ async fn webrtc_session(
             let mut sessions = state
                 .rtc_sessions
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             sessions.remove(&rtc_session_id);
         }
         cleanup_input_source_once(&state, &source_id, &cleanup_once);
@@ -789,7 +789,7 @@ async fn webrtc_session(
                 let mut sessions = state
                     .rtc_sessions
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(crate::lock_recover);
                 sessions.remove(&rtc_session_id);
             }
             cleanup_input_source_once(&state, &source_id, &cleanup_once);
@@ -850,7 +850,7 @@ fn cleanup_input_source(state: &ServerState, source_id: &str) {
     let mut registry = state
         .input_sessions
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(crate::lock_recover);
     registry.mark_disconnected(source_id, state.auth.reconnect_window);
 }
 
@@ -870,7 +870,7 @@ async fn input_session(
             let mut registry = state
                 .input_sessions
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             registry.reserve_ports(
                 &source_id,
                 &claims.player_id,
@@ -1003,7 +1003,7 @@ fn process_input_payload(
                     let registry = state
                         .input_sessions
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        .unwrap_or_else(crate::lock_recover);
                     registry.is_source_owner(source_id, port)
                 };
 

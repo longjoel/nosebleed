@@ -46,14 +46,14 @@ impl RuntimeControl {
         let mut commands = self
             .commands
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         std::mem::take(&mut *commands)
     }
 
     fn request_command(&self, command: RuntimeCommand) {
         self.commands
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(crate::lock_recover)
             .push(command);
     }
 }
@@ -548,7 +548,7 @@ fn set_core_option_default(key: String, default_value: String) {
     if let Ok(value) = CString::new(chosen_value) {
         core_option_defaults()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(crate::lock_recover)
             .insert(key, value);
     }
 }
@@ -557,7 +557,7 @@ unsafe fn collect_legacy_core_options(mut current: *const RetroVariable) {
     unsafe {
         let mut defaults = core_option_defaults()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         defaults.clear();
 
         loop {
@@ -586,7 +586,7 @@ unsafe fn collect_core_option_definitions(mut current: *const RetroCoreOptionDef
     unsafe {
         core_option_defaults()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(crate::lock_recover)
             .clear();
 
         loop {
@@ -611,7 +611,7 @@ unsafe fn collect_core_option_definitions_v2(mut current: *const RetroCoreOption
     unsafe {
         core_option_defaults()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(crate::lock_recover)
             .clear();
 
         loop {
@@ -695,7 +695,7 @@ unsafe fn run_libretro_unsafe(
     {
         let mut context = callback_context()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         context.frame_store = Some(frame_store);
         context.audio_bus = Some(audio_bus.clone());
         context.input_hub = Some(input_hub);
@@ -955,7 +955,7 @@ unsafe fn run_libretro_unsafe(
 fn clear_callback_context() {
     let mut context = callback_context()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(crate::lock_recover);
     context.frame_store = None;
     context.audio_bus = None;
     context.input_hub = None;
@@ -1107,7 +1107,7 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
 
             let defaults = core_option_defaults()
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             let Some(value) = defaults.get(&key) else {
                 return false;
             };
@@ -1127,7 +1127,7 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
 
             let mut context = callback_context()
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             context.pixel_format = format;
             true
         }
@@ -1153,7 +1153,7 @@ unsafe extern "C" fn video_refresh_callback(
     let (frame_store, pixel_format) = {
         let context = callback_context()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         (context.frame_store.clone(), context.pixel_format)
     };
 
@@ -1176,7 +1176,7 @@ unsafe extern "C" fn audio_sample_callback(left: i16, right: i16) {
     let audio_bus = {
         let context = callback_context()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         context.audio_bus.clone()
     };
     let Some(audio_bus) = audio_bus else {
@@ -1194,7 +1194,7 @@ unsafe extern "C" fn audio_sample_batch_callback(data: *const i16, frames: usize
     let audio_bus = {
         let context = callback_context()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         context.audio_bus.clone()
     };
     let Some(audio_bus) = audio_bus else {
@@ -1213,7 +1213,7 @@ unsafe extern "C" fn input_state_callback(port: u32, device: u32, index: u32, id
     let input_hub = {
         let context = callback_context()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         context.input_hub.clone()
     };
 

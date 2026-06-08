@@ -251,7 +251,7 @@ impl ArcadeService {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let day = day_key(now);
@@ -275,7 +275,7 @@ impl ArcadeService {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let day = day_key(now);
@@ -298,7 +298,7 @@ impl ArcadeService {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         if let Some(until) = inner.cooldown_until.get(&player_key) {
@@ -377,7 +377,7 @@ impl ArcadeService {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let machine_index = find_machine_index(&inner, machine_id)?;
@@ -437,7 +437,7 @@ impl ArcadeService {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let machine_index = find_machine_index(&inner, machine_id)?;
@@ -505,7 +505,7 @@ impl ArcadeService {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let round_id = inner.next_round_id;

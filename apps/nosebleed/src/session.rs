@@ -106,7 +106,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             if state.active.is_some() && !force_restart {
                 return Err(anyhow!("session already running; set force_restart=true"));
             }
@@ -117,7 +117,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             state.last_exit = Some(exit);
         }
 
@@ -137,7 +137,7 @@ impl SessionManager {
         let mut state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         state.active = Some(ActiveRuntime {
             launch,
             session_dir,
@@ -170,7 +170,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             state.active.take()
         };
 
@@ -179,7 +179,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             state.last_exit = Some(exit);
             snapshot_locked(&state)
         } else {
@@ -192,7 +192,7 @@ impl SessionManager {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         snapshot_locked(&state)
     }
 
@@ -201,7 +201,7 @@ impl SessionManager {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let runtime = state
             .active
             .as_ref()
@@ -215,7 +215,7 @@ impl SessionManager {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let runtime = state
             .active
             .as_ref()
@@ -229,7 +229,7 @@ impl SessionManager {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(crate::lock_recover);
         let runtime = state
             .active
             .as_ref()
@@ -243,7 +243,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             state.active.take()
         };
 
@@ -261,7 +261,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             let should_take = state
                 .active
                 .as_ref()
@@ -278,7 +278,7 @@ impl SessionManager {
             let mut state = self
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(crate::lock_recover);
             state.last_exit = Some(exit);
         }
     }

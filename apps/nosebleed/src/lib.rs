@@ -5,6 +5,16 @@
 //! Axum server/session building blocks for hosts that want to embed or wrap the
 //! runtime instead of spawning the CLI.
 
+use std::sync::PoisonError;
+
+/// Recover from a poisoned lock by logging the event and proceeding with the
+/// inner value. This should never silently surrender — every poison event is
+/// a sign of a panic on the lock-holding thread and deserves visibility.
+pub fn lock_recover<G>(err: PoisonError<G>) -> G {
+    eprintln!("[nosebleed] recovered from poisoned lock — a prior panic occurred on the lock-holding thread");
+    err.into_inner()
+}
+
 pub mod arcade;
 pub mod audio;
 pub mod auth;
