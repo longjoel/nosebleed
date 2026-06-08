@@ -255,15 +255,13 @@ async fn feed_video_appsrc(
             Some(payload) => payload,
             None => continue,
         };
-        let pts_us = frame.timestamp_us;
         let duration_us = last_timestamp_us
-            .map(|previous| pts_us.saturating_sub(previous).max(1))
+            .map(|previous| frame.timestamp_us.saturating_sub(previous).max(1))
             .unwrap_or(DEFAULT_VIDEO_FRAME_DURATION_US);
-        last_timestamp_us = Some(pts_us);
+        last_timestamp_us = Some(frame.timestamp_us);
 
         let mut buffer = gst::Buffer::from_mut_slice(payload);
         if let Some(buffer_mut) = buffer.get_mut() {
-            buffer_mut.set_pts(gst::ClockTime::from_useconds(pts_us));
             buffer_mut.set_duration(gst::ClockTime::from_useconds(duration_us));
         }
 
@@ -308,7 +306,6 @@ async fn feed_audio_appsrc(
 
         let mut buffer = gst::Buffer::from_mut_slice(payload);
         if let Some(buffer_mut) = buffer.get_mut() {
-            buffer_mut.set_pts(gst::ClockTime::from_useconds(audio.timestamp_us));
             let duration_us = ((audio.frame_count as u64) * 1_000_000)
                 .saturating_div(audio.sample_rate_hz.max(1) as u64)
                 .max(1);
@@ -395,6 +392,7 @@ struct RawFramePacket {
 
 #[derive(Debug, Clone)]
 struct AudioPacket {
+    #[allow(dead_code)]
     timestamp_us: u64,
     sample_rate_hz: u32,
     channels: u8,

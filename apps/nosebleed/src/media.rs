@@ -193,11 +193,6 @@ pub struct MediaConfig {
     pub video_encoder: VideoEncoderConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WebRtcTransportMode {
-    MediaTracks,
-}
-
 impl MediaConfig {
     pub fn from_sources(
         cli_backend: Option<&str>,
@@ -223,12 +218,6 @@ impl MediaConfig {
         })
     }
 
-    pub fn select_webrtc_transport(
-        &self,
-        _requested_video_mode: Option<&str>,
-    ) -> WebRtcTransportMode {
-        WebRtcTransportMode::MediaTracks
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -282,7 +271,7 @@ impl GstreamerPipelineSpec {
             audio_codec: "opus",
             audio_encoder: "opusenc",
             video_pipeline: concat!(
-                "appsrc name=video_src is-live=true format=time do-timestamp=false ",
+                "appsrc name=video_src is-live=true format=time do-timestamp=true ",
                 "! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ",
                 "! videoconvert ",
                 "! vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 threads=4 ",
@@ -296,7 +285,7 @@ impl GstreamerPipelineSpec {
 
     pub fn h264_nvenc(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
         let video_pipeline = format!(
-            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+            "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
              ! video/x-raw,format=NV12 \
@@ -320,7 +309,7 @@ impl GstreamerPipelineSpec {
 
     pub fn h264_qsv(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
         let video_pipeline = format!(
-            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+            "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
              ! video/x-raw,format=NV12 \
@@ -344,7 +333,7 @@ impl GstreamerPipelineSpec {
 
     pub fn h264_vaapi(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
         let video_pipeline = format!(
-            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+            "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
              ! video/x-raw,format=NV12 \
@@ -368,7 +357,7 @@ impl GstreamerPipelineSpec {
 
     pub fn h264_v4l2(bitrate_kbps: u32, _keyframe_interval: u32) -> Self {
         let video_pipeline = format!(
-            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+            "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
              ! video/x-raw,format=NV12 \
@@ -391,7 +380,7 @@ impl GstreamerPipelineSpec {
 
     pub fn h264_x264_software(bitrate_kbps: u32, keyframe_interval: u32) -> Self {
         let video_pipeline = format!(
-            "appsrc name=video_src is-live=true format=time do-timestamp=false \
+            "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
              ! x264enc tune=zerolatency speed-preset=ultrafast bframes=0 key-int-max={kf} bitrate={br} \
@@ -415,12 +404,12 @@ impl GstreamerPipelineSpec {
 
     fn opus_audio_pipeline() -> String {
         concat!(
-            "appsrc name=audio_src is-live=true format=time do-timestamp=false ",
-            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=300000000 ",
+            "appsrc name=audio_src is-live=true format=time do-timestamp=true ",
+            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 ",
             "! audioconvert ! audioresample ",
             "! opusenc audio-type=restricted-lowdelay frame-size=20 bitrate=64000 inband-fec=true packet-loss-percentage=10 ",
             "! rtpopuspay pt=111 ",
-            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=200000000 ",
+            "! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=400000000 ",
             "! appsink name=audio_sink sync=false async=false drop=true max-buffers=64 emit-signals=true"
         )
         .to_string()
@@ -631,8 +620,6 @@ fn build_hardcoded_pipeline(
 #[derive(Debug, Clone, Serialize)]
 pub struct MediaCapabilities {
     pub selected_backend: MediaBackend,
-    pub compiled_backends: Vec<&'static str>,
-    pub available_backends: Vec<&'static str>,
     pub gstreamer: GstreamerCapabilities,
     pub runtime: MediaRuntimeStatus,
     pub encoders: EncoderReport,
@@ -648,15 +635,6 @@ pub struct EncoderReport {
 impl MediaCapabilities {
     pub fn detect(config: &MediaConfig) -> Self {
         let gstreamer = detect_gstreamer_capabilities();
-        let mut compiled_backends = vec!["legacy"];
-        if gstreamer.compiled_in {
-            compiled_backends.push("gstreamer");
-        }
-
-        let mut available_backends = vec!["legacy"];
-        if gstreamer.available_for_runtime {
-            available_backends.push("gstreamer");
-        }
 
         // Probe encoders if GStreamer is available
         let (candidates, selected, reason) = if gstreamer.available_for_runtime {
@@ -683,8 +661,6 @@ impl MediaCapabilities {
 
         Self {
             selected_backend: config.selected_backend,
-            compiled_backends,
-            available_backends,
             gstreamer,
             runtime: MediaRuntimeStatus {
                 backend: config.selected_backend.as_str(),
@@ -779,10 +755,7 @@ fn detect_gstreamer_capabilities() -> GstreamerCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        GstreamerPipelineSpec, MediaBackend, MediaConfig, VideoEncoderConfig,
-        VideoEncoderSelection, WebRtcTransportMode,
-    };
+    use super::{GstreamerPipelineSpec, MediaBackend, MediaConfig, VideoEncoderSelection};
 
     #[test]
     fn parses_media_backend_aliases() {
@@ -829,23 +802,6 @@ mod tests {
                 .unwrap()
                 .selected_backend,
             MediaBackend::Gstreamer
-        );
-    }
-
-    #[test]
-    fn gstreamer_backend_forces_media_tracks() {
-        let config = MediaConfig {
-            selected_backend: MediaBackend::Gstreamer,
-            video_encoder: VideoEncoderConfig::default(),
-        };
-
-        assert_eq!(
-            config.select_webrtc_transport(Some("raw")),
-            WebRtcTransportMode::MediaTracks
-        );
-        assert_eq!(
-            config.select_webrtc_transport(Some("vp8")),
-            WebRtcTransportMode::MediaTracks
         );
     }
 

@@ -35,7 +35,7 @@ use crate::auth::{MatchClaims, MatchRole, validate_match_token};
 use crate::gstreamer_backend::SharedGstreamerMedia;
 use crate::input::{Button, InputHub};
 use crate::media::select_encoder;
-use crate::media::{MediaCapabilities, MediaConfig, WebRtcTransportMode};
+use crate::media::{MediaCapabilities, MediaConfig};
 use crate::protocol::{
     ClientCommand, ClientMessage, ServerMessage, decode_input_binary, now_unix_ms,
     parse_client_message, serialize_server_message,
@@ -404,10 +404,6 @@ async fn webrtc_session(
         Ok(claims) => claims,
         Err(response) => return response,
     };
-    let requested_transport = state
-        .media_config
-        .select_webrtc_transport(offer.video_mode.as_deref());
-
     let input_allowed = claims
         .as_ref()
         .is_none_or(|claims| claims.role == MatchRole::Player);
@@ -457,8 +453,7 @@ async fn webrtc_session(
         }
     };
 
-    if requested_transport == WebRtcTransportMode::MediaTracks {
-        {
+    {
             let Some(gstreamer_media) = state.gstreamer_media.as_ref() else {
                 cleanup_input_source(&state, &source_id);
                 return (
@@ -509,13 +504,12 @@ async fn webrtc_session(
                 }
             };
             tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
-        }
     }
 
     // In MediaTracks mode the browser creates a negotiated "input" data channel
     // (id=0). The server must mirror this with the same id so both sides agree.
     // Negotiated channels don't fire on_data_channel — we must hook up on_message here.
-    if requested_transport == WebRtcTransportMode::MediaTracks && input_allowed {
+    if input_allowed {
         match peer_connection
             .create_data_channel(
                 "input",
@@ -626,7 +620,6 @@ async fn webrtc_session(
         let source_for_channels = source_id.clone();
         let owned_ports_for_channels = owned_ports.clone();
         let cleanup_for_channels = cleanup_once.clone();
-        let _requested_transport_for_channels = requested_transport;
         peer_connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
             let state_for_channels = state_for_channels.clone();
             let source_for_channels = source_for_channels.clone();

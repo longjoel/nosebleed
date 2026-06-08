@@ -152,10 +152,8 @@ async fn main() -> Result<()> {
 
     eprintln!("starting server: listen={}", config.listen);
     eprintln!(
-        "media backend selected={} compiled={:?} available={:?}",
+        "media backend selected={}",
         media_capabilities.selected_backend.as_str(),
-        media_capabilities.compiled_backends,
-        media_capabilities.available_backends
     );
     let server_result = server::run(server_state, config.listen).await;
 
