@@ -704,108 +704,28 @@ async fn webrtc_session(
         }));
     }
 
-    let remote_description = match RTCSessionDescription::offer(offer.sdp) {
-        Ok(description) => description,
+    let _cleanup = SessionCleanup {
+        state: &state,
+        source_id: &source_id,
+        session_id: client_id,
+        cleanup_once: &cleanup_once,
+        armed: true,
+    };
+
+    match negotiate_webrtc_offer(&peer_connection, offer.sdp).await {
+        Ok(answer) => {
+            _cleanup.disarm();
+            Json(answer).into_response()
+        }
         Err(err) => {
-            {
-                let mut sessions = state
-                    .rtc_sessions
-                    .lock()
-                    .unwrap_or_else(crate::lock_recover);
-                sessions.remove(&rtc_session_id);
-            }
-            cleanup_input_source_once(&state, &source_id, &cleanup_once);
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("invalid remote offer: {err:#}"),
-            )
-                .into_response();
-        }
-    };
-
-    if let Err(err) = peer_connection
-        .set_remote_description(remote_description)
-        .await
-    {
-        eprintln!("gstreamer webrtc: failed to set remote description: {err:#}");
-        {
-            let mut sessions = state
-                .rtc_sessions
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
-            sessions.remove(&rtc_session_id);
-        }
-        cleanup_input_source_once(&state, &source_id, &cleanup_once);
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("failed to set remote description: {err:#}"),
-        )
-            .into_response();
-    }
-
-    let answer = match peer_connection.create_answer(None).await {
-        Ok(answer) => answer,
-        Err(err) => {
-            eprintln!("gstreamer webrtc: failed to create answer: {err:#}");
-            {
-                let mut sessions = state
-                    .rtc_sessions
-                    .lock()
-                    .unwrap_or_else(crate::lock_recover);
-                sessions.remove(&rtc_session_id);
-            }
-            cleanup_input_source_once(&state, &source_id, &cleanup_once);
-            return (
+            eprintln!("gstreamer webrtc: session negotiation failed: {err:#}");
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to create answer: {err:#}"),
+                format!("{err:#}"),
             )
-                .into_response();
+                .into_response()
         }
-    };
-
-    let mut gather_complete = peer_connection.gathering_complete_promise().await;
-    if let Err(err) = peer_connection.set_local_description(answer).await {
-        eprintln!("gstreamer webrtc: failed to set local description: {err:#}");
-        {
-            let mut sessions = state
-                .rtc_sessions
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
-            sessions.remove(&rtc_session_id);
-        }
-        cleanup_input_source_once(&state, &source_id, &cleanup_once);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to set local description: {err:#}"),
-        )
-            .into_response();
     }
-
-    let _ = gather_complete.recv().await;
-    let local_description = match peer_connection.local_description().await {
-        Some(description) if description.sdp_type == RTCSdpType::Answer => description,
-        _ => {
-            {
-                let mut sessions = state
-                    .rtc_sessions
-                    .lock()
-                    .unwrap_or_else(crate::lock_recover);
-                sessions.remove(&rtc_session_id);
-            }
-            cleanup_input_source_once(&state, &source_id, &cleanup_once);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "local description unavailable".to_string(),
-            )
-                .into_response();
-        }
-    };
-
-    Json(WebRtcAnswer {
-        kind: "answer",
-        sdp: local_description.sdp,
-    })
-    .into_response()
 }
 
 async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnection>> {
@@ -838,6 +758,39 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
     Ok(Arc::new(connection))
 }
 
+/// Negotiate the SDP exchange with the peer: set remote description, create
+/// answer, gather ICE candidates, and return the local answer.
+async fn negotiate_webrtc_offer(
+    pc: &RTCPeerConnection,
+    offer_sdp: String,
+) -> Result<WebRtcAnswer> {
+    let remote_description = RTCSessionDescription::offer(offer_sdp)
+        .map_err(|err| anyhow!("invalid remote offer: {err:#}"))?;
+    pc.set_remote_description(remote_description)
+        .await
+        .map_err(|err| anyhow!("failed to set remote description: {err:#}"))?;
+    let answer = pc
+        .create_answer(None)
+        .await
+        .map_err(|err| anyhow!("failed to create answer: {err:#}"))?;
+    let mut gather_complete = pc.gathering_complete_promise().await;
+    pc.set_local_description(answer)
+        .await
+        .map_err(|err| anyhow!("failed to set local description: {err:#}"))?;
+    let _ = gather_complete.recv().await;
+    let local_description = pc
+        .local_description()
+        .await
+        .ok_or_else(|| anyhow!("local description unavailable"))?;
+    if local_description.sdp_type != RTCSdpType::Answer {
+        return Err(anyhow!("local description was not an answer"));
+    }
+    Ok(WebRtcAnswer {
+        kind: "answer",
+        sdp: local_description.sdp,
+    })
+}
+
 fn cleanup_input_source_once(state: &ServerState, source_id: &str, cleanup_once: &AtomicBool) {
     if cleanup_once.swap(true, Ordering::Relaxed) {
         return;
@@ -852,6 +805,39 @@ fn cleanup_input_source(state: &ServerState, source_id: &str) {
         .lock()
         .unwrap_or_else(crate::lock_recover);
     registry.mark_disconnected(source_id, state.auth.reconnect_window);
+}
+
+/// RAII guard that cleans up a WebRTC session on Drop.
+/// Disarm with `.disarm()` on the success path to prevent cleanup.
+struct SessionCleanup<'a> {
+    state: &'a ServerState,
+    source_id: &'a str,
+    session_id: u64,
+    cleanup_once: &'a AtomicBool,
+    armed: bool,
+}
+
+impl SessionCleanup<'_> {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SessionCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        {
+            let mut sessions = self
+                .state
+                .rtc_sessions
+                .lock()
+                .unwrap_or_else(crate::lock_recover);
+            sessions.remove(&self.session_id);
+        }
+        cleanup_input_source_once(self.state, self.source_id, self.cleanup_once);
+    }
 }
 
 async fn input_session(
