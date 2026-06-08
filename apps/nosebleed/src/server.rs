@@ -824,7 +824,7 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
             },
             RTCIceServer {
                 urls: vec![
-                    "turn:72.62.243.69:3478?transport=tcp".to_string(),
+                    "turns:lngnckr.tech:443?transport=tcp".to_string(),
                 ],
                 username: "nosebleed".to_string(),
                 credential: "118e21c57679b3293d7a0b9adfd90ea7".to_string(),
