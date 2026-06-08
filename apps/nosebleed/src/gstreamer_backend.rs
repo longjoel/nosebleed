@@ -14,11 +14,10 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc_util::marshal::Unmarshal;
 
 use crate::media::{MediaRuntimeStatus, SelectedEncoder};
+use crate::protocol::{
+    AUDIO_PACKET_HEADER_LEN, AUDIO_PACKET_MAGIC, FRAME_HEADER_LEN, FRAME_MAGIC,
+};
 
-const FRAME_MAGIC: &[u8; 4] = b"NBF0";
-const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
-const AUDIO_PACKET_MAGIC: &[u8; 4] = b"NBA0";
-const AUDIO_PACKET_HEADER_LEN: usize = 34;
 const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 16_666;
 
 #[derive(Clone)]

@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::frame::VideoFrame;
 use crate::input::{InputBinary, InputUpdate};
 
-const FRAME_MAGIC: &[u8; 4] = b"NBF0";
-const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
-const AUDIO_MAGIC: &[u8; 4] = b"NBA0";
-const AUDIO_SAMPLE_FORMAT_S16LE: u8 = 0;
-const AUDIO_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 1 + 1 + 4 + 4;
+pub const FRAME_MAGIC: &[u8; 4] = b"NBF0";
+pub const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
+pub const AUDIO_PACKET_MAGIC: &[u8; 4] = b"NBA0";
+pub const AUDIO_SAMPLE_FORMAT_S16LE: u8 = 0;
+pub const AUDIO_PACKET_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 1 + 1 + 4 + 4;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -164,8 +164,8 @@ pub fn encode_audio_packet(
     let frame_count = (sample_count / safe_channels as usize) as u32;
     let payload_len = (sample_count * std::mem::size_of::<i16>()) as u32;
 
-    let mut out = Vec::with_capacity(AUDIO_HEADER_LEN + payload_len as usize);
-    out.extend_from_slice(AUDIO_MAGIC);
+    let mut out = Vec::with_capacity(AUDIO_PACKET_HEADER_LEN + payload_len as usize);
+    out.extend_from_slice(AUDIO_PACKET_MAGIC);
     out.extend_from_slice(&sequence.to_le_bytes());
     out.extend_from_slice(&now_unix_micros().to_le_bytes());
     out.extend_from_slice(&sample_rate_hz.to_le_bytes());
