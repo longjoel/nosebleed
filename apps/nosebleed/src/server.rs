@@ -814,13 +814,22 @@ async fn webrtc_session(
 
 async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnection>> {
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec![
-                "stun:stun.l.google.com:19302".to_string(),
-                "stun:stun1.l.google.com:19302".to_string(),
-            ],
-            ..Default::default()
-        }],
+        ice_servers: vec![
+            RTCIceServer {
+                urls: vec![
+                    "stun:stun.l.google.com:19302".to_string(),
+                    "stun:stun1.l.google.com:19302".to_string(),
+                ],
+                ..Default::default()
+            },
+            RTCIceServer {
+                urls: vec![
+                    "turn:72.62.243.69:3478?transport=tcp".to_string(),
+                ],
+                username: "nosebleed".to_string(),
+                credential: "118e21c57679b3293d7a0b9adfd90ea7".to_string(),
+            },
+        ],
         ..Default::default()
     };
 

@@ -360,6 +360,7 @@ export class NosebleedPlayer {
       if (this.rtcPeer !== peer) {
         return;
       }
+      console.log(`[nosebleed] ICE connection state: ${peer.connectionState}`);
       if (peer.connectionState === "connected") {
         this.emitTransport("webrtc-open");
         this.emitStatus("connected (webrtc)");
@@ -368,7 +369,20 @@ export class NosebleedPlayer {
         peer.connectionState === "disconnected" ||
         peer.connectionState === "closed"
       ) {
+        console.warn(`[nosebleed] ICE disconnected: ${peer.connectionState}`);
         this.scheduleReconnect("webrtc disconnected");
+      }
+    };
+
+    peer.oniceconnectionstatechange = () => {
+      console.log(`[nosebleed] ICE detail: ${peer.iceConnectionState}`);
+    };
+
+    peer.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log(`[nosebleed] ICE candidate: ${event.candidate.candidate}`);
+      } else {
+        console.log("[nosebleed] ICE gathering complete");
       }
     };
 
