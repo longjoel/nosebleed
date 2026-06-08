@@ -387,6 +387,48 @@ fn sync_save_ram_to_disk(
     Ok(true)
 }
 
+fn restore_sram_from_disk(
+    save_dir: &Path,
+    content_path: &Path,
+    get_memory_data: RetroGetMemoryData,
+    get_memory_size: RetroGetMemorySize,
+) -> Result<bool> {
+    let Some(snapshot_path) = save_snapshot_path(save_dir, content_path) else {
+        return Ok(false);
+    };
+
+    if !snapshot_path.exists() {
+        return Ok(false);
+    }
+
+    let size = unsafe { get_memory_size(RETRO_MEMORY_SAVE_RAM) };
+    if size == 0 {
+        return Ok(false);
+    }
+
+    let data_ptr = unsafe { get_memory_data(RETRO_MEMORY_SAVE_RAM) };
+    if data_ptr.is_null() {
+        return Ok(false);
+    }
+
+    let bytes = fs::read(&snapshot_path)
+        .with_context(|| format!("failed to read SRAM file {}", snapshot_path.display()))?;
+
+    if bytes.is_empty() {
+        return Ok(false);
+    }
+
+    let dst = unsafe { slice::from_raw_parts_mut(data_ptr as *mut u8, size) };
+    let len = bytes.len().min(dst.len());
+    dst[..len].copy_from_slice(&bytes[..len]);
+    eprintln!(
+        "restored {} byte(s) of SRAM from {}",
+        len,
+        snapshot_path.display()
+    );
+    Ok(true)
+}
+
 fn state_snapshot_path(save_dir: &Path, content_path: &Path, slot: u8) -> Option<PathBuf> {
     let stem = content_path
         .file_stem()?
@@ -764,6 +806,20 @@ unsafe fn run_libretro_unsafe(
         unsafe { retro_deinit() };
         clear_callback_context();
         bail!("core failed to load game/content");
+    }
+
+    // Pre-load SRAM from disk so cartridge battery saves survive across sessions.
+    if let (Some(get_memory_data), Some(get_memory_size), Some(content_path)) = (
+        retro_get_memory_data,
+        retro_get_memory_size,
+        config.content_path.as_deref(),
+    ) {
+        let save_dir = save_directory_path();
+        if let Err(err) =
+            restore_sram_from_disk(&save_dir, content_path, get_memory_data, get_memory_size)
+        {
+            eprintln!("SRAM restore failed: {err:#}");
+        }
     }
 
     let (fps, sample_rate_hz) = if let Some(get_av_info) = retro_get_system_av_info {
