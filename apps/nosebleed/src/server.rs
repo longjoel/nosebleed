@@ -64,6 +64,7 @@ pub struct ServerState {
     pub auth: Arc<AuthConfig>,
     pub session_manager: Arc<SessionManager>,
     pub arcade: Arc<ArcadeService>,
+    pub turn_credential: String,
     input_sessions: Arc<std::sync::Mutex<InputSessionRegistry>>,
     rtc_sessions: Arc<std::sync::Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>,
     webrtc_api: Arc<webrtc::api::API>,
@@ -80,6 +81,7 @@ impl ServerState {
         session_manager: Arc<SessionManager>,
         media_config: MediaConfig,
         media_capabilities: MediaCapabilities,
+        turn_credential: String,
     ) -> Result<Self> {
         let selection = select_encoder(&media_config.video_encoder)
             .context("failed to select GStreamer video encoder")?;
@@ -108,6 +110,7 @@ impl ServerState {
             auth,
             session_manager,
             arcade: Arc::new(ArcadeService::new(6)),
+            turn_credential,
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api: {
@@ -828,7 +831,7 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
                     "turns:lngnckr.tech:5349?transport=tcp".to_string(),
                 ],
                 username: "nosebleed".to_string(),
-                credential: "118e21c57679b3293d7a0b9adfd90ea7".to_string(),
+                credential: state.turn_credential.clone(),
             },
         ],
         ..Default::default()

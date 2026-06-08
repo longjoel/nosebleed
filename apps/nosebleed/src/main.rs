@@ -134,6 +134,9 @@ async fn main() -> Result<()> {
         .start(config.launch.clone(), true)
         .context("failed to start initial runtime session")?;
 
+    let turn_credential = std::env::var("NOSEBLEED_TURN_SECRET")
+        .unwrap_or_else(|_| "".to_string());
+
     let server_state = ServerState::new(
         video_rx,
         audio_bus.sender(),
@@ -144,6 +147,7 @@ async fn main() -> Result<()> {
         session_manager.clone(),
         config.media.clone(),
         media_capabilities.clone(),
+        turn_credential,
     )?;
 
     eprintln!("starting server: listen={}", config.listen);
