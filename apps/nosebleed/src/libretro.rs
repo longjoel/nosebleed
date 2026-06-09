@@ -789,6 +789,7 @@ fn run_libretro_unsafe(
     let retro_get_system_av_info = unsafe {
         load_optional_symbol::<RetroGetSystemAvInfo>(&library, b"retro_get_system_av_info\0")
     };
+    eprintln!("AV_INFO_DEBUG: get_av_info present={}", retro_get_system_av_info.is_some());
     {
         let mut context = callback_context()
             .lock()
