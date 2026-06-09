@@ -274,6 +274,8 @@ impl GstreamerPipelineSpec {
                 "appsrc name=video_src is-live=true format=time do-timestamp=true ",
                 "! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ",
                 "! videoconvert ",
+                "! videoscale add-borders=true ",
+                "! video/x-raw,pixel-aspect-ratio=1/1 ",
                 "! vp8enc deadline=1 cpu-used=8 error-resilient=partitions keyframe-max-dist=60 threads=4 ",
                 "! rtpvp8pay pt=96 picture-id-mode=15-bit ",
                 "! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true"
@@ -288,7 +290,8 @@ impl GstreamerPipelineSpec {
             "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
-             ! video/x-raw,format=NV12 \
+             ! videoscale add-borders=true \
+             ! video/x-raw,format=NV12,pixel-aspect-ratio=1/1 \
              ! nvh264enc bframes=0 rc-lookahead=0 gop-size={kf} bitrate={br} preset=low-latency-hq \
              ! h264parse config-interval=-1 \
              ! rtph264pay config-interval=-1 pt=96 \
@@ -312,7 +315,8 @@ impl GstreamerPipelineSpec {
             "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
-             ! video/x-raw,format=NV12 \
+             ! videoscale add-borders=true \
+             ! video/x-raw,format=NV12,pixel-aspect-ratio=1/1 \
              ! qsvh264enc b-frames=0 gop-size={kf} bitrate={br} \
              ! h264parse config-interval=-1 \
              ! rtph264pay config-interval=-1 pt=96 \
@@ -336,7 +340,8 @@ impl GstreamerPipelineSpec {
             "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
-             ! video/x-raw,format=NV12 \
+             ! videoscale add-borders=true \
+             ! video/x-raw,format=NV12,pixel-aspect-ratio=1/1 \
              ! vaapih264enc bitrate={br} keyframe-period={kf} rate-control=cbr \
              ! h264parse config-interval=-1 \
              ! rtph264pay config-interval=-1 pt=96 \
@@ -360,7 +365,8 @@ impl GstreamerPipelineSpec {
             "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
-             ! video/x-raw,format=NV12 \
+             ! videoscale add-borders=true \
+             ! video/x-raw,format=NV12,pixel-aspect-ratio=1/1 \
              ! v4l2h264enc extra-controls=\"encode,bitrate={br},h26x_minimum_qp_value=10\" \
              ! h264parse config-interval=-1 \
              ! rtph264pay config-interval=-1 pt=96 \
@@ -383,6 +389,8 @@ impl GstreamerPipelineSpec {
             "appsrc name=video_src is-live=true format=time do-timestamp=true \
              ! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 \
              ! videoconvert \
+             ! videoscale add-borders=true \
+             ! video/x-raw,pixel-aspect-ratio=1/1 \
              ! x264enc tune=zerolatency speed-preset=ultrafast bframes=0 key-int-max={kf} bitrate={br} \
              ! video/x-h264,profile=baseline \
              ! h264parse config-interval=-1 \

@@ -965,10 +965,20 @@ fn run_libretro_unsafe(
         // Compute pixel aspect ratio from core-reported geometry:
         // PAR = display_aspect_ratio * base_height / base_width
         let par = if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
-            av_info.geometry.aspect_ratio * av_info.geometry.base_height as f32 / av_info.geometry.base_width as f32
+            av_info.geometry.aspect_ratio * av_info.geometry.base_height as f32
+                / av_info.geometry.base_width as f32
         } else {
             1.0 // fallback: square pixels
         };
+        eprintln!(
+            "av_info: base={}x{} max={}x{} aspect={:.4} → PAR={:.4}",
+            av_info.geometry.base_width,
+            av_info.geometry.base_height,
+            av_info.geometry.max_width,
+            av_info.geometry.max_height,
+            av_info.geometry.aspect_ratio,
+            par
+        );
         (fps, sample_rate, par)
     } else {
         (config.fallback_fps, 48_000, 1.0)
