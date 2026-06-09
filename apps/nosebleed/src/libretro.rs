@@ -187,6 +187,7 @@ struct CallbackContext {
     input_hub: Option<Arc<InputHub>>,
     pixel_format: PixelFormat,
     pixel_aspect_ratio: f32,
+    display_aspect_ratio: f32,
     hw_context: Option<Arc<crate::hw_render::HwRenderContext>>,
 }
 
@@ -946,12 +947,10 @@ fn run_libretro_unsafe(
         }
     }
 
-    let (fps, sample_rate_hz, pixel_aspect_ratio) = if let Some(get_av_info) = retro_get_system_av_info {
+    let (fps, sample_rate_hz, pixel_aspect_ratio, display_aspect_ratio) =
+        if let Some(get_av_info) = retro_get_system_av_info {
         let mut av_info = MaybeUninit::<RetroSystemAvInfo>::zeroed();
-        // SAFETY: get_av_info writes a RetroSystemAvInfo struct at the given pointer.
-        // The core guarantees the struct is fully initialized after the call.
         unsafe { get_av_info(av_info.as_mut_ptr()) };
-        // SAFETY: av_info was just initialized by the FFI call above.
         let av_info = unsafe { av_info.assume_init() };
         let fps = if av_info.timing.fps > 1.0 {
             av_info.timing.fps as f32
@@ -963,13 +962,20 @@ fn run_libretro_unsafe(
         } else {
             48_000
         };
-        // Compute pixel aspect ratio from core-reported geometry:
-        // PAR = display_aspect_ratio * base_height / base_width
-        let par = if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
-            av_info.geometry.aspect_ratio * av_info.geometry.base_height as f32
-                / av_info.geometry.base_width as f32
+        let dar = if av_info.geometry.aspect_ratio > 0.0 {
+            av_info.geometry.aspect_ratio
+        } else if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
+            av_info.geometry.base_width as f32 / av_info.geometry.base_height as f32
         } else {
-            1.0 // fallback: square pixels
+            4.0 / 3.0 // fallback
+        };
+        // PAR is computed per-frame from actual pixel dimensions × DAR,
+        // not from av_info base dimensions (which may differ due to upscaling).
+        // Store DAR here; video_refresh_callback will compute PAR = DAR * height / width.
+        let par = if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
+            dar * av_info.geometry.base_height as f32 / av_info.geometry.base_width as f32
+        } else {
+            1.0
         };
         eprintln!(
             "av_info: base={}x{} max={}x{} aspect={:.4} → PAR={:.4}",
@@ -980,9 +986,9 @@ fn run_libretro_unsafe(
             av_info.geometry.aspect_ratio,
             par
         );
-        (fps, sample_rate, par)
+        (fps, sample_rate, par, dar)
     } else {
-        (config.fallback_fps, 48_000, 1.0)
+        (config.fallback_fps, 48_000, 1.0, 4.0 / 3.0)
     };
     let fps = fps.max(1.0);
     audio_bus.set_sample_rate_hz(sample_rate_hz);
@@ -993,6 +999,7 @@ fn run_libretro_unsafe(
             .lock()
             .unwrap_or_else(crate::lock_recover);
         ctx.pixel_aspect_ratio = pixel_aspect_ratio;
+        ctx.display_aspect_ratio = display_aspect_ratio;
     }
 
     let frame_interval = Duration::from_secs_f64((1.0 / fps as f64).max(0.001));
@@ -1522,15 +1529,24 @@ unsafe extern "C" fn video_refresh_callback(
         return;
     }
 
-    let (frame_store, pixel_format, pixel_aspect_ratio) = {
+    let (frame_store, pixel_format, display_aspect_ratio) = {
         let context = callback_context()
             .lock()
             .unwrap_or_else(crate::lock_recover);
-        (context.frame_store.clone(), context.pixel_format, context.pixel_aspect_ratio)
+        (context.frame_store.clone(), context.pixel_format, context.display_aspect_ratio)
     };
 
     let Some(frame_store) = frame_store else {
         return;
+    };
+
+    // Compute PAR from actual frame dimensions and stored DAR.
+    // This handles cores that upscale (e.g. N64: av_info reports 320×240
+    // but actual frames are 640×240 with double-width pixels).
+    let pixel_aspect_ratio = if width > 0 && height > 0 && display_aspect_ratio > 0.0 {
+        display_aspect_ratio * height as f32 / width as f32
+    } else {
+        1.0
     };
 
     let byte_len = pitch.saturating_mul(height as usize);

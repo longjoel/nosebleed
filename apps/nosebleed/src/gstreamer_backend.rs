@@ -229,10 +229,60 @@ async fn feed_video_appsrc(
             continue;
         };
 
-        // Aspect ratio correction is handled on the browser side via CSS
-        // aspect-ratio + object-fit:contain. Server-side frame padding was
-        // removed because it double-processes with browser letterboxing and
-        // relies on core-reported PAR which varies unexpectedly across cores.
+        // If pixels are non-square, pad the frame with black borders to
+        // produce square-pixel output. This achieves correct aspect ratio
+        // without relying on GStreamer PAR metadata (which doesn't survive
+        // WebRTC encoding).
+        //
+        // PAR is computed from the display aspect ratio (from av_info) and
+        // the ACTUAL frame dimensions (which may differ from av_info base
+        // dims when the core upscales, e.g. N64 320→640 wide pixels).
+        let par = frame.pixel_aspect_ratio;
+        const PAR_EPSILON: f32 = 0.001;
+        if (par - 1.0).abs() > PAR_EPSILON && par > 0.0 {
+            let bpp = match frame.pixel_format {
+                0 => 4,  // BGRx
+                1 | 2 => 2, // RGB16, xRGB1555
+                _ => {
+                    continue; // unknown format, skip frame
+                }
+            };
+            if par < 1.0 {
+                // Pixels are narrower than tall (e.g. N64 640×240 → 4:3).
+                // Add height via letterboxing to achieve square pixels.
+                let target_h = ((frame.height as f32) / par).round() as u32;
+                let pad_top = ((target_h - frame.height) / 2) as usize;
+                let row_bytes = frame.width as usize * bpp;
+                let mut padded = vec![0u8; row_bytes * target_h as usize];
+                for row in 0..frame.height as usize {
+                    let src_start = row * frame.pitch;
+                    let dst_start = (row + pad_top) * row_bytes;
+                    let copy_len = (frame.width as usize * bpp).min(row_bytes);
+                    padded[dst_start..dst_start + copy_len]
+                        .copy_from_slice(&frame.payload[src_start..src_start + copy_len]);
+                }
+                frame.payload = padded;
+                frame.pitch = row_bytes;
+                frame.height = target_h;
+            } else {
+                // Pixels are wider than tall. Add width via pillarboxing.
+                let target_w = ((frame.width as f32) * par).round() as u32;
+                let pad_left = ((target_w - frame.width) / 2) as usize;
+                let row_bytes = target_w as usize * bpp;
+                let mut padded = vec![0u8; row_bytes * frame.height as usize];
+                for row in 0..frame.height as usize {
+                    let src_start = row * frame.pitch;
+                    let dst_start = row * row_bytes + pad_left * bpp;
+                    let copy_len = (frame.width as usize * bpp).min(row_bytes);
+                    padded[dst_start..dst_start + copy_len]
+                        .copy_from_slice(&frame.payload[src_start..src_start + copy_len]);
+                }
+                frame.payload = padded;
+                frame.pitch = row_bytes;
+                frame.width = target_w;
+            }
+            frame.pixel_aspect_ratio = 1.0;
+        }
         if let Some(previous_sequence) = last_sequence {
             let skipped = frame.sequence.saturating_sub(previous_sequence + 1);
             if skipped > 0 {
