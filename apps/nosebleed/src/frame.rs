@@ -40,6 +40,7 @@ pub struct VideoFrame {
     pub height: u32,
     pub pitch: usize,
     pub pixel_format: PixelFormat,
+    pub pixel_aspect_ratio: f32,
     pub data: Arc<[u8]>,
 }
 
@@ -74,6 +75,7 @@ impl LatestFrameStore {
         height: u32,
         pitch: usize,
         pixel_format: PixelFormat,
+        pixel_aspect_ratio: f32,
         bytes: &[u8],
     ) {
         let mut guard = self
@@ -89,6 +91,7 @@ impl LatestFrameStore {
             height,
             pitch,
             pixel_format,
+            pixel_aspect_ratio,
             data: Arc::<[u8]>::from(bytes),
         });
 

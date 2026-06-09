@@ -186,6 +186,7 @@ struct CallbackContext {
     audio_bus: Option<Arc<AudioBus>>,
     input_hub: Option<Arc<InputHub>>,
     pixel_format: PixelFormat,
+    pixel_aspect_ratio: f32,
     hw_context: Option<Arc<crate::hw_render::HwRenderContext>>,
 }
 
@@ -944,7 +945,7 @@ fn run_libretro_unsafe(
         }
     }
 
-    let (fps, sample_rate_hz) = if let Some(get_av_info) = retro_get_system_av_info {
+    let (fps, sample_rate_hz, pixel_aspect_ratio) = if let Some(get_av_info) = retro_get_system_av_info {
         let mut av_info = MaybeUninit::<RetroSystemAvInfo>::zeroed();
         // SAFETY: get_av_info writes a RetroSystemAvInfo struct at the given pointer.
         // The core guarantees the struct is fully initialized after the call.
@@ -961,12 +962,27 @@ fn run_libretro_unsafe(
         } else {
             48_000
         };
-        (fps, sample_rate)
+        // Compute pixel aspect ratio from core-reported geometry:
+        // PAR = display_aspect_ratio * base_height / base_width
+        let par = if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
+            av_info.geometry.aspect_ratio * av_info.geometry.base_height as f32 / av_info.geometry.base_width as f32
+        } else {
+            1.0 // fallback: square pixels
+        };
+        (fps, sample_rate, par)
     } else {
-        (config.fallback_fps, 48_000)
+        (config.fallback_fps, 48_000, 1.0)
     };
     let fps = fps.max(1.0);
     audio_bus.set_sample_rate_hz(sample_rate_hz);
+
+    // Store the pixel aspect ratio so the video_refresh callback can include it
+    {
+        let mut ctx = callback_context()
+            .lock()
+            .unwrap_or_else(crate::lock_recover);
+        ctx.pixel_aspect_ratio = pixel_aspect_ratio;
+    }
 
     let frame_interval = Duration::from_secs_f64((1.0 / fps as f64).max(0.001));
     let mut next_frame = Instant::now();
@@ -1128,7 +1144,7 @@ fn read_hw_framebuffer(_hw: &crate::hw_render::HwRenderContext, frame_store: &La
         flipped[dst_row..dst_row + row_bytes].copy_from_slice(&pixels[src_row..src_row + row_bytes]);
     }
 
-    frame_store.publish(w as u32, h as u32, row_bytes, PixelFormat::Xrgb8888, &flipped);
+    frame_store.publish(w as u32, h as u32, row_bytes, PixelFormat::Xrgb8888, 1.0, &flipped);
 }
 
 fn clear_callback_context() {
@@ -1495,11 +1511,11 @@ unsafe extern "C" fn video_refresh_callback(
         return;
     }
 
-    let (frame_store, pixel_format) = {
+    let (frame_store, pixel_format, pixel_aspect_ratio) = {
         let context = callback_context()
             .lock()
             .unwrap_or_else(crate::lock_recover);
-        (context.frame_store.clone(), context.pixel_format)
+        (context.frame_store.clone(), context.pixel_format, context.pixel_aspect_ratio)
     };
 
     let Some(frame_store) = frame_store else {
@@ -1514,7 +1530,7 @@ unsafe extern "C" fn video_refresh_callback(
     // SAFETY: `data` comes from the core callback and points to at least `pitch * height` bytes
     // for the current video frame.
     let bytes = unsafe { std::slice::from_raw_parts(data as *const u8, byte_len) };
-    frame_store.publish(width, height, pitch, pixel_format, bytes);
+    frame_store.publish(width, height, pitch, pixel_format, pixel_aspect_ratio, bytes);
 }
 
 /// # Safety

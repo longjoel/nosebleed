@@ -8,7 +8,7 @@ use crate::frame::VideoFrame;
 use crate::input::{InputBinary, InputUpdate};
 
 pub const FRAME_MAGIC: &[u8; 4] = b"NBF0";
-pub const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4;
+pub const FRAME_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 4 + 4 + 1 + 4 + 4;
 pub const AUDIO_PACKET_MAGIC: &[u8; 4] = b"NBA0";
 pub const AUDIO_SAMPLE_FORMAT_S16LE: u8 = 0;
 pub const AUDIO_PACKET_HEADER_LEN: usize = 4 + 8 + 8 + 4 + 1 + 1 + 4 + 4;
@@ -147,6 +147,7 @@ pub fn encode_frame_packet(frame: &VideoFrame) -> Arc<[u8]> {
     out.extend_from_slice(&frame.height.to_le_bytes());
     out.extend_from_slice(&(frame.pitch as u32).to_le_bytes());
     out.push(frame.pixel_format.as_u8());
+    out.extend_from_slice(&frame.pixel_aspect_ratio.to_bits().to_le_bytes());
     out.extend_from_slice(&payload_len.to_le_bytes());
     out.extend_from_slice(frame.data.as_ref());
 

@@ -355,6 +355,10 @@ fn build_video_caps(frame: &RawFramePacket) -> Result<gst::Caps> {
         .field("width", frame.width as i32)
         .field("height", frame.height as i32)
         .field("framerate", gst::Fraction::new(60, 1))
+        .field(
+            "pixel-aspect-ratio",
+            gst::Fraction::approximate_f32(frame.pixel_aspect_ratio).unwrap_or(gst::Fraction::new(1, 1)),
+        )
         .build())
 }
 
@@ -407,6 +411,7 @@ pub(crate) struct RawFramePacket {
     pub(crate) height: u32,
     pub(crate) pitch: usize,
     pub(crate) pixel_format: u8,
+    pub(crate) pixel_aspect_ratio: f32,
     pub(crate) payload: Vec<u8>,
 }
 
@@ -432,7 +437,8 @@ pub(crate) fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
     let height = le_u32(&packet[24..28]);
     let pitch = le_u32(&packet[28..32]) as usize;
     let pixel_format = packet[32];
-    let payload_len = le_u32(&packet[33..37]) as usize;
+    let pixel_aspect_ratio = f32::from_bits(le_u32(&packet[33..37]));
+    let payload_len = le_u32(&packet[37..41]) as usize;
     if FRAME_HEADER_LEN + payload_len > packet.len() {
         return None;
     }
@@ -444,6 +450,7 @@ pub(crate) fn decode_raw_frame_packet(packet: &[u8]) -> Option<RawFramePacket> {
         height,
         pitch,
         pixel_format,
+        pixel_aspect_ratio,
         payload: packet[FRAME_HEADER_LEN..FRAME_HEADER_LEN + payload_len].to_vec(),
     })
 }
@@ -564,6 +571,7 @@ mod tests {
         buf.extend_from_slice(&480u32.to_le_bytes()); // height 4
         buf.extend_from_slice(&2560u32.to_le_bytes()); // pitch 4
         buf.push(0u8); // pixel_format (BGRx) 1
+        buf.extend_from_slice(&1.0f32.to_bits().to_le_bytes()); // pixel_aspect_ratio 4
         buf.extend_from_slice(&payload_len.to_le_bytes()); // payload_len 4
         // padding to match payload_len
         buf.resize(total_len, 0xAB);
@@ -580,6 +588,7 @@ mod tests {
         assert_eq!(frame.height, 480);
         assert_eq!(frame.pitch, 2560);
         assert_eq!(frame.pixel_format, 0);
+        assert_eq!(frame.pixel_aspect_ratio, 1.0);
         assert_eq!(frame.payload.len(), 64);
     }
 
@@ -607,6 +616,7 @@ mod tests {
         buf.extend_from_slice(&480u32.to_le_bytes());
         buf.extend_from_slice(&2560u32.to_le_bytes());
         buf.push(0u8);
+        buf.extend_from_slice(&1.0f32.to_bits().to_le_bytes()); // pixel_aspect_ratio 4
         buf.extend_from_slice(&100u32.to_le_bytes()); // claims 100 bytes
         buf.resize(FRAME_HEADER_LEN + 50, 0xBB);
         assert!(decode_raw_frame_packet(&buf).is_none());
@@ -739,6 +749,7 @@ mod tests {
             height: 4,
             pitch: 16, // 4 * 4 bytes per pixel = 16
             pixel_format: 0, // BGRx → 4 bpp
+            pixel_aspect_ratio: 1.0,
             payload: vec![0xAAu8; 64], // 4*4*4 = 64
         };
         let result = repack_video_payload(&frame);
@@ -755,6 +766,7 @@ mod tests {
             height: 4,
             pitch: 20, // wider than row_bytes (16)
             pixel_format: 0, // BGRx → 4 bpp
+            pixel_aspect_ratio: 1.0,
             payload: vec![0xBBu8; 80], // pitch * height = 80
         };
         let result = repack_video_payload(&frame);
@@ -771,6 +783,7 @@ mod tests {
             height: 4,
             pitch: 16,
             pixel_format: 99, // unknown
+            pixel_aspect_ratio: 1.0,
             payload: vec![0xCCu8; 64],
         };
         assert!(repack_video_payload(&frame).is_none());
@@ -785,6 +798,7 @@ mod tests {
             height: 100,
             pitch: 400,
             pixel_format: 0,
+            pixel_aspect_ratio: 1.0,
             payload: vec![0xDDu8; 10], // far too little
         };
         assert!(repack_video_payload(&frame).is_none());
@@ -799,6 +813,7 @@ mod tests {
             height: 4,
             pitch: 8, // 4 * 2 = 8
             pixel_format: 1, // RGB16 → 2 bpp
+            pixel_aspect_ratio: 1.0,
             payload: vec![0xEEu8; 32],
         };
         let result = repack_video_payload(&frame);
@@ -815,6 +830,7 @@ mod tests {
             height: 4,
             pitch: 8, // 4 * 2 = 8
             pixel_format: 2, // xRGB1555 → 2 bpp
+            pixel_aspect_ratio: 1.0,
             payload: vec![0xFFu8; 32],
         };
         let result = repack_video_payload(&frame);
@@ -826,8 +842,8 @@ mod tests {
 
     #[test]
     fn test_frame_header_len_is_exact() {
-        // FRAME_HEADER_LEN = 4 (magic) + 8 (seq) + 8 (ts) + 4 (w) + 4 (h) + 4 (pitch) + 1 (fmt) + 4 (plen)
-        assert_eq!(FRAME_HEADER_LEN, 37);
+        // FRAME_HEADER_LEN = 4 (magic) + 8 (seq) + 8 (ts) + 4 (w) + 4 (h) + 4 (pitch) + 1 (fmt) + 4 (par) + 4 (plen)
+        assert_eq!(FRAME_HEADER_LEN, 41);
     }
 
     #[test]
@@ -889,6 +905,7 @@ mod tests {
             height: 480,
             pitch: 2560,
             pixel_format: 0,
+            pixel_aspect_ratio: 1.0,
             payload: vec![0; 640 * 480 * 4],
         };
         // build_video_caps needs gst::init which isn't available in tests.

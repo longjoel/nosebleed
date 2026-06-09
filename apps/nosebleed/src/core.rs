@@ -116,7 +116,7 @@ fn run_mock_core(
             }
         }
 
-        frame_store.publish(width, height, pitch, PixelFormat::Xrgb8888, &buffer);
+        frame_store.publish(width, height, pitch, PixelFormat::Xrgb8888, 1.0, &buffer);
         frame_counter = frame_counter.wrapping_add(1);
 
         sample_fraction += samples_per_frame;
