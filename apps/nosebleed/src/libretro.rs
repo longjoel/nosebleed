@@ -611,8 +611,13 @@ fn core_option_defaults() -> &'static Mutex<HashMap<String, CString>> {
 
 fn set_core_option_default(key: String, default_value: String) {
     let override_value = match key.as_str() {
+        // Keep angrylion RDP (software renderer, no GL needed) for compatibility
         "mupen64plus-rdp-plugin" => Some("angrylion"),
         "mupen64plus-rsp-plugin" => Some("cxd4"),
+        // Set 4:3 output to 640x480 for crisp square-pixel output
+        "mupen64plus-43screensize" => Some("640x480"),
+        // Ensure 4:3 aspect ratio
+        "mupen64plus-aspect" => Some("4:3"),
         _ => None,
     };
     let chosen_value = override_value.unwrap_or(default_value.as_str());
