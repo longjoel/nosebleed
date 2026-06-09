@@ -1427,10 +1427,6 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
             }
             true
         }
-        RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS => {
-            // Accept but don't parse — core just needs acknowledgment
-            true
-        }
         other => {
             eprintln!("libretro env: unhandled command {other}");
             false
