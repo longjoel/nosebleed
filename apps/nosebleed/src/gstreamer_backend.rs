@@ -229,59 +229,16 @@ async fn feed_video_appsrc(
             continue;
         };
 
-        // If pixels are non-square, pad the frame with black borders to
-        // produce square-pixel output. This achieves correct aspect ratio
-        // without relying on GStreamer PAR metadata (which doesn't survive
-        // WebRTC encoding).
-        //
-        // PAR is computed from the display aspect ratio (from av_info) and
-        // the ACTUAL frame dimensions (which may differ from av_info base
-        // dims when the core upscales, e.g. N64 320→640 wide pixels).
+        // If pixels are non-square, inform GStreamer via pixel-aspect-ratio
+        // in the caps. Downstream videoconvert in the pipeline will handle
+        // the conversion to square pixels at the correct display size.
         let par = frame.pixel_aspect_ratio;
         const PAR_EPSILON: f32 = 0.001;
         if (par - 1.0).abs() > PAR_EPSILON && par > 0.0 {
-            let bpp = match frame.pixel_format {
-                0 => 4,  // BGRx
-                1 | 2 => 2, // RGB16, xRGB1555
-                _ => {
-                    continue; // unknown format, skip frame
-                }
-            };
-            if par < 1.0 {
-                // Pixels are narrower than tall (e.g. N64 640×240 → 4:3).
-                // Add height via letterboxing to achieve square pixels.
-                let target_h = ((frame.height as f32) / par).round() as u32;
-                let pad_top = ((target_h - frame.height) / 2) as usize;
-                let row_bytes = frame.width as usize * bpp;
-                let mut padded = vec![0u8; row_bytes * target_h as usize];
-                for row in 0..frame.height as usize {
-                    let src_start = row * frame.pitch;
-                    let dst_start = (row + pad_top) * row_bytes;
-                    let copy_len = (frame.width as usize * bpp).min(row_bytes);
-                    padded[dst_start..dst_start + copy_len]
-                        .copy_from_slice(&frame.payload[src_start..src_start + copy_len]);
-                }
-                frame.payload = padded;
-                frame.pitch = row_bytes;
-                frame.height = target_h;
-            } else {
-                // Pixels are wider than tall. Add width via pillarboxing.
-                let target_w = ((frame.width as f32) * par).round() as u32;
-                let pad_left = ((target_w - frame.width) / 2) as usize;
-                let row_bytes = target_w as usize * bpp;
-                let mut padded = vec![0u8; row_bytes * frame.height as usize];
-                for row in 0..frame.height as usize {
-                    let src_start = row * frame.pitch;
-                    let dst_start = row * row_bytes + pad_left * bpp;
-                    let copy_len = (frame.width as usize * bpp).min(row_bytes);
-                    padded[dst_start..dst_start + copy_len]
-                        .copy_from_slice(&frame.payload[src_start..src_start + copy_len]);
-                }
-                frame.payload = padded;
-                frame.pitch = row_bytes;
-                frame.width = target_w;
-            }
-            frame.pixel_aspect_ratio = 1.0;
+            eprintln!(
+                "FRAME_PAR: {}x{} pitch={} fmt={} par={:.4}",
+                frame.width, frame.height, frame.pitch, frame.pixel_format, par
+            );
         }
         if let Some(previous_sequence) = last_sequence {
             let skipped = frame.sequence.saturating_sub(previous_sequence + 1);
@@ -404,12 +361,36 @@ fn build_video_caps(frame: &RawFramePacket) -> Result<gst::Caps> {
         other => return Err(anyhow!("unsupported libretro pixel format {other}")),
     };
 
-    Ok(gst::Caps::builder("video/x-raw")
+    let mut caps = gst::Caps::builder("video/x-raw")
         .field("format", format)
         .field("width", frame.width as i32)
         .field("height", frame.height as i32)
-        .field("framerate", gst::Fraction::new(60, 1))
-        .build())
+        .field("framerate", gst::Fraction::new(60, 1));
+
+    // If pixels are non-square, set pixel-aspect-ratio on caps so downstream
+    // videoconvert can produce square-pixel output at the correct display size.
+    let par = frame.pixel_aspect_ratio;
+    const PAR_EPSILON: f32 = 0.001;
+    if (par - 1.0).abs() > PAR_EPSILON && par > 0.0 {
+        // GStreamer PAR is expressed as a fraction of width/height scaling.
+        // E.g. for 640x240 at 4:3 DAR: par=0.5 means each pixel is half as wide
+        // as it is tall → width PAR numerator = 1, denominator = 2.
+        let par_num = (par * 1000.0).round() as i32;
+        let par_den = 1000i32;
+        // Simplify by cancellation
+        let gcd = gcd(par_num.abs(), par_den);
+        caps = caps.field("pixel-aspect-ratio", gst::Fraction::new(par_num / gcd, par_den / gcd));
+        eprintln!(
+            "CAPS_PAR: {}x{} format={} par={:.4} → pixel-aspect-ratio={}/{}",
+            frame.width, frame.height, format, par, par_num / gcd, par_den / gcd
+        );
+    }
+
+    Ok(caps.build())
+}
+
+fn gcd(a: i32, b: i32) -> i32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 fn repack_video_payload(frame: &RawFramePacket) -> Option<Vec<u8>> {
