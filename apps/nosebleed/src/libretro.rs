@@ -72,6 +72,11 @@ const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: u32 = 55;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: u32 = 67;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: u32 = 68;
 const RETRO_ENVIRONMENT_SET_HW_RENDER: u32 = 36;
+const RETRO_ENVIRONMENT_GET_LOG_INTERFACE: u32 = 27;
+const RETRO_ENVIRONMENT_GET_PERF_INTERFACE: u32 = 28;
+const RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY: u32 = 14;
+const RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: u32 = 52;
+const RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: u32 = 69;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ANALOG: u32 = 5;
 const RETRO_LANGUAGE_ENGLISH: u32 = 0;
@@ -111,6 +116,33 @@ struct RetroHwRenderCallback {
     get_proc_address: Option<RetroHwGetProcAddress>,
     shared_context: bool,
     context_destroy_alt: Option<RetroHwContextDestroy>,
+}
+
+type RetroLogPrint = unsafe extern "C" fn(level: u32, fmt: *const c_char);
+
+#[repr(C)]
+struct RetroLogCallback {
+    log: Option<RetroLogPrint>,
+}
+
+#[repr(C)]
+struct RetroPerfCounter {
+    ident: *const c_char,
+    start: u64,
+    total: u64,
+    call_cnt: u64,
+    registered: bool,
+}
+
+#[repr(C)]
+struct RetroPerfCallback {
+    get_time_usec: Option<unsafe extern "C" fn() -> u64>,
+    get_cpu_features: Option<unsafe extern "C" fn() -> u64>,
+    get_perf_counter: Option<unsafe extern "C" fn() -> u64>,
+    perf_register: Option<unsafe extern "C" fn(*mut RetroPerfCounter)>,
+    perf_start: Option<unsafe extern "C" fn(*mut RetroPerfCounter)>,
+    perf_stop: Option<unsafe extern "C" fn(*mut RetroPerfCounter)>,
+    perf_log: Option<unsafe extern "C" fn()>,
 }
 
 #[derive(Debug, Clone)]
@@ -850,7 +882,7 @@ fn run_libretro_unsafe(
 
     // SAFETY: retro_load_game calls into the core to load a game. The RetroGameInfo
     // struct must contain valid pointers (null for absent fields is fine).
-    let loaded = if let Some(content_cstr) = &content_cstr {
+    let mut loaded = if let Some(content_cstr) = &content_cstr {
         let (data_ptr, data_len) = if let Some(bytes) = &content_bytes {
             (bytes.as_ptr() as *const c_void, bytes.len())
         } else {
@@ -867,6 +899,20 @@ fn run_libretro_unsafe(
     } else {
         unsafe { retro_load_game(ptr::null()) }
     };
+
+    // Fallback: some cores (e.g. Mupen64Plus-Next) report need_fullpath=false but
+    // actually require the real file path. Retry with path-only (no preloaded data).
+    if !loaded && content_bytes.is_some() && content_cstr.is_some() {
+        let content_cstr = content_cstr.as_ref().unwrap();
+        let game_info = RetroGameInfo {
+            path: content_cstr.as_ptr(),
+            data: ptr::null(),
+            size: 0,
+            meta: ptr::null(),
+        };
+        eprintln!("retrying load with path-only (need_fullpath fallback)");
+        loaded = unsafe { retro_load_game(&game_info) };
+    }
 
     if !loaded {
         if let Some(content_path) = &config.content_path {
@@ -1336,7 +1382,59 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
             eprintln!("libretro HW render: EGL context created ({width}x{height})");
             true
         }
-        _ => false,
+        RETRO_ENVIRONMENT_GET_LOG_INTERFACE => {
+            if data.is_null() {
+                return false;
+            }
+            let cb = unsafe { &mut *(data as *mut RetroLogCallback) };
+            cb.log = Some(retro_log_print);
+            true
+        }
+        RETRO_ENVIRONMENT_GET_PERF_INTERFACE => {
+            if data.is_null() {
+                return false;
+            }
+            let cb = unsafe { &mut *(data as *mut RetroPerfCallback) };
+            cb.get_time_usec = Some(retro_perf_get_time_usec);
+            cb.get_cpu_features = Some(retro_perf_get_cpu_features);
+            cb.get_perf_counter = Some(retro_perf_get_counter);
+            true
+        }
+        RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY => {
+            if data.is_null() {
+                return false;
+            }
+            unsafe {
+                *(data as *mut *const c_char) = system_directory_cstr().as_ptr();
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION => {
+            if data.is_null() {
+                return false;
+            }
+            unsafe {
+                *(data as *mut u32) = 1;
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER => {
+            if data.is_null() {
+                return false;
+            }
+            unsafe {
+                *(data as *mut u32) = 0;
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS => {
+            // Accept but don't parse — core just needs acknowledgment
+            true
+        }
+        other => {
+            eprintln!("libretro env: unhandled command {other}");
+            false
+        }
     }
 }
 
@@ -1538,3 +1636,17 @@ fn log_core_rejection_hints(hints: &CoreLoadHints, content_path: &PathBuf) {
         eprintln!("content has no file extension; core may require a known extension");
     }
 }
+
+// Log callback: eprintln the messages
+unsafe extern "C" fn retro_log_print(level: u32, fmt: *const c_char) {
+    if fmt.is_null() {
+        return;
+    }
+    let fmt_str = unsafe { std::ffi::CStr::from_ptr(fmt) }.to_string_lossy();
+    eprintln!("[core:{level}] {fmt_str}");
+}
+
+// Perf stubs: return 0
+unsafe extern "C" fn retro_perf_get_time_usec() -> u64 { 0 }
+unsafe extern "C" fn retro_perf_get_cpu_features() -> u64 { 0 }
+unsafe extern "C" fn retro_perf_get_counter() -> u64 { 0 }
