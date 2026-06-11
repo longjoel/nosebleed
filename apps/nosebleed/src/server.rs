@@ -17,10 +17,12 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::{MIME_TYPE_H264, MediaEngine};
+use webrtc::api::setting_engine::SettingEngine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
@@ -65,6 +67,7 @@ pub struct ServerState {
     pub session_manager: Arc<SessionManager>,
     pub arcade: Arc<ArcadeService>,
     pub turn_credential: String,
+    pub turn_host: String,
     input_sessions: Arc<std::sync::Mutex<InputSessionRegistry>>,
     rtc_sessions: Arc<std::sync::Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>,
     webrtc_api: Arc<webrtc::api::API>,
@@ -82,6 +85,8 @@ impl ServerState {
         media_config: MediaConfig,
         media_capabilities: MediaCapabilities,
         turn_credential: String,
+        turn_host: String,
+        public_ip: Option<String>,
     ) -> Result<Self> {
         let selection = select_encoder(&media_config.video_encoder)
             .context("failed to select GStreamer video encoder")?;
@@ -98,6 +103,15 @@ impl ServerState {
             selection,
         )?));
 
+        let mut setting_engine = SettingEngine::default();
+        if let Some(ip) = &public_ip {
+            eprintln!("nat_1to1_ips: setting public IP to {ip}");
+            setting_engine.set_nat_1to1_ips(
+                vec![ip.clone()],
+                RTCIceCandidateType::Host,
+            );
+        }
+
         Ok(Self {
             video_rx,
             media_config,
@@ -111,6 +125,7 @@ impl ServerState {
             session_manager,
             arcade: Arc::new(ArcadeService::new(6)),
             turn_credential,
+            turn_host,
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api: {
@@ -135,7 +150,7 @@ impl ServerState {
                         RTPCodecType::Video,
                     )
                     .ok();
-                Arc::new(APIBuilder::new().with_media_engine(media_engine).build())
+                Arc::new(APIBuilder::new().with_media_engine(media_engine).with_setting_engine(setting_engine).build())
             },
         })
     }
@@ -825,11 +840,12 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
     // Only include TURN server when a credential is configured.
     // An empty credential causes webrtc-rs to reject the config
     // with "turn server credentials required".
+    let host = &state.turn_host;
     if !state.turn_credential.is_empty() {
         ice_servers.push(RTCIceServer {
             urls: vec![
-                "turns:lngnckr.tech:443?transport=tcp".to_string(),
-                "turns:lngnckr.tech:5349?transport=tcp".to_string(),
+                format!("turns:{host}:443?transport=tcp"),
+                format!("turns:{host}:5349?transport=tcp"),
             ],
             username: "nosebleed".to_string(),
             credential: state.turn_credential.clone(),

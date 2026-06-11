@@ -8,6 +8,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use rtp::packet::Packet as RtpPacket;
 use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::broadcast::error::RecvError;
 use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
@@ -296,7 +297,15 @@ async fn feed_audio_appsrc(
     let mut base_sequence: Option<u64> = None;
     let frames_per_chunk: u64 = 512; // matches AudioBus::CHUNK_FRAMES
 
-    while let Ok(packet) = audio_rx.recv().await {
+    loop {
+        let packet = match audio_rx.recv().await {
+            Ok(packet) => packet,
+            Err(RecvError::Lagged(n)) => {
+                eprintln!("audio broadcast receiver lagged by {n} packets; continuing");
+                continue;
+            }
+            Err(RecvError::Closed) => break,
+        };
         let Some(audio) = decode_audio_packet(packet.as_ref()) else {
             continue;
         };

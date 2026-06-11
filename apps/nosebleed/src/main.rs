@@ -136,6 +136,9 @@ async fn main() -> Result<()> {
 
     let turn_credential = std::env::var("NOSEBLEED_TURN_SECRET")
         .unwrap_or_else(|_| "".to_string());
+    let turn_host = std::env::var("NOSEBLEED_TURN_HOST")
+        .unwrap_or_else(|_| "lngnckr.tech".to_string());
+    let public_ip = std::env::var("NOSEBLEED_PUBLIC_IP").ok();
 
     let server_state = ServerState::new(
         video_rx,
@@ -148,8 +151,10 @@ async fn main() -> Result<()> {
         config.media.clone(),
         media_capabilities.clone(),
         turn_credential,
-    )?;
+        turn_host,
+        public_ip,
 
+    )?;
     eprintln!("starting server: listen={}", config.listen);
     eprintln!(
         "media backend selected={}",
