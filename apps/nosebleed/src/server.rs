@@ -1281,7 +1281,12 @@ impl InputSessionRegistry {
                 }
 
                 if owner.player_id != player_id {
-                    return Err(format!("port {port} already assigned to another player"));
+                    // Different player — the C# seat manager is the authority.
+                    // If it issued a token for a new player on this port, the old
+                    // reservation is stale.  Force-release so the new player can
+                    // connect even when the old tab's input WS is still open.
+                    self.per_port.remove(port);
+                    continue;
                 }
 
                 // Same player, different source — auto-release the old reservation
