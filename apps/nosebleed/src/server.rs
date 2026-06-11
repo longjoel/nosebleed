@@ -68,6 +68,7 @@ pub struct ServerState {
     pub arcade: Arc<ArcadeService>,
     pub turn_credential: String,
     pub turn_host: String,
+    pub turn_url_internal: String,
     input_sessions: Arc<std::sync::Mutex<InputSessionRegistry>>,
     rtc_sessions: Arc<std::sync::Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>,
     webrtc_api: Arc<webrtc::api::API>,
@@ -86,6 +87,7 @@ impl ServerState {
         media_capabilities: MediaCapabilities,
         turn_credential: String,
         turn_host: String,
+        turn_url_internal: String,
         public_ip: Option<String>,
     ) -> Result<Self> {
         let selection = select_encoder(&media_config.video_encoder)
@@ -126,6 +128,7 @@ impl ServerState {
             arcade: Arc::new(ArcadeService::new(6)),
             turn_credential,
             turn_host,
+            turn_url_internal,
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api: {
@@ -842,11 +845,17 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
     // with "turn server credentials required".
     let host = &state.turn_host;
     if !state.turn_credential.is_empty() {
+        let mut urls = vec![
+            format!("turns:{host}:443?transport=tcp"),
+            format!("turns:{host}:5349?transport=tcp"),
+        ];
+        // Internal plain TURN URL for Docker container → host communication.
+        // Avoids hairpin NAT issues. Uses the Docker host gateway IP.
+        if !state.turn_url_internal.is_empty() {
+            urls.push(state.turn_url_internal.clone());
+        }
         ice_servers.push(RTCIceServer {
-            urls: vec![
-                format!("turns:{host}:443?transport=tcp"),
-                format!("turns:{host}:5349?transport=tcp"),
-            ],
+            urls,
             username: "nosebleed".to_string(),
             credential: state.turn_credential.clone(),
         });

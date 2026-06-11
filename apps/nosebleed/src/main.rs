@@ -138,6 +138,10 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "".to_string());
     let turn_host = std::env::var("NOSEBLEED_TURN_HOST")
         .unwrap_or_else(|_| "lngnckr.tech".to_string());
+    let turn_url_internal = std::env::var("NOSEBLEED_TURN_URL_INTERNAL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
     let public_ip = std::env::var("NOSEBLEED_PUBLIC_IP").ok();
 
     let server_state = ServerState::new(
@@ -152,6 +156,7 @@ async fn main() -> Result<()> {
         media_capabilities.clone(),
         turn_credential,
         turn_host,
+        turn_url_internal,
         public_ip,
 
     )?;
