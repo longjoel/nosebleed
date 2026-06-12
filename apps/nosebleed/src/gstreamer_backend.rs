@@ -258,7 +258,7 @@ async fn feed_video_appsrc(
         let Some(packet) = raw_video_rx.borrow().clone() else {
             continue;
         };
-        let Some(mut frame) = decode_raw_frame_packet(packet.as_ref()) else {
+        let Some(frame) = decode_raw_frame_packet(packet.as_ref()) else {
             continue;
         };
 

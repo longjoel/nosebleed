@@ -439,11 +439,11 @@ pub fn select_encoder(config: &VideoEncoderConfig) -> Result<SelectedEncoder> {
             VideoEncoderSelection::X264 => ("x264enc", "h264"),
             VideoEncoderSelection::Vp8 => ("vp8enc", "vp8"),
             VideoEncoderSelection::Software => {
-                // "software" means no hardware encoder, but try x264 first then vp8
-                if has("x264enc") {
-                    ("x264enc", "h264")
-                } else {
+                // "software" means no hardware encoder, prefer VP8 over software H.264
+                if has("vp8enc") {
                     ("vp8enc", "vp8")
+                } else {
+                    ("x264enc", "h264")
                 }
             }
             VideoEncoderSelection::Auto => unreachable!(),
@@ -463,15 +463,15 @@ pub fn select_encoder(config: &VideoEncoderConfig) -> Result<SelectedEncoder> {
         });
     }
 
-    // Auto-detect: H.264 first, then VP8 fallback
-    // Preference: nvh264enc > qsvh264enc > vaapih264enc > v4l2h264enc > x264enc > vp8enc
+    // Auto-detect: hardware H.264 first, then VP8, then software H.264 fallback
+    // Preference: nvh264enc > qsvh264enc > vaapih264enc > v4l2h264enc > vp8enc > x264enc
     for (element, codec) in &[
         ("nvh264enc", "h264"),
         ("qsvh264enc", "h264"),
         ("vaapih264enc", "h264"),
         ("v4l2h264enc", "h264"),
-        ("x264enc", "h264"),
         ("vp8enc", "vp8"),
+        ("x264enc", "h264"),
     ] {
         if *codec == "vp8" && config.codec != VideoCodec::H264 {
             // If user asked for H264 specifically and we couldn't find any H.264,
