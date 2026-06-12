@@ -279,10 +279,7 @@ impl InputHub {
             return;
         }
 
-        let mut guard = self
-            .state
-            .write()
-            .unwrap_or_else(crate::lock_recover);
+        let mut guard = self.state.write().unwrap_or_else(crate::lock_recover);
         let source_map = guard.per_port.entry(port).or_default();
         let entry = source_map.entry(source.to_owned()).or_default();
 
@@ -311,10 +308,7 @@ impl InputHub {
             return;
         }
 
-        let mut guard = self
-            .state
-            .write()
-            .unwrap_or_else(crate::lock_recover);
+        let mut guard = self.state.write().unwrap_or_else(crate::lock_recover);
         let source_map = guard.per_port.entry(port).or_default();
         let entry = source_map.entry(source.to_owned()).or_default();
         entry.updated_at = Instant::now();
@@ -325,10 +319,7 @@ impl InputHub {
     }
 
     pub fn remove_source(&self, source: &str) {
-        let mut guard = self
-            .state
-            .write()
-            .unwrap_or_else(crate::lock_recover);
+        let mut guard = self.state.write().unwrap_or_else(crate::lock_recover);
         let mut empty_ports = Vec::new();
 
         for (port, map) in &mut guard.per_port {
@@ -373,10 +364,7 @@ impl InputHub {
 
         let now = Instant::now();
         let mut merged = MergedState::default();
-        let guard = self
-            .state
-            .read()
-            .unwrap_or_else(crate::lock_recover);
+        let guard = self.state.read().unwrap_or_else(crate::lock_recover);
 
         let Some(sources) = guard.per_port.get(&port) else {
             return merged;

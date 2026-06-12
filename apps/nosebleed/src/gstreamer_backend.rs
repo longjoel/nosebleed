@@ -7,17 +7,15 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use rtp::packet::Packet as RtpPacket;
-use tokio::sync::{broadcast, mpsc, watch};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, mpsc, watch};
 use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc_util::marshal::Unmarshal;
 
 use crate::media::{MediaRuntimeStatus, SelectedEncoder};
-use crate::protocol::{
-    AUDIO_PACKET_HEADER_LEN, AUDIO_PACKET_MAGIC, FRAME_HEADER_LEN, FRAME_MAGIC,
-};
+use crate::protocol::{AUDIO_PACKET_HEADER_LEN, AUDIO_PACKET_MAGIC, FRAME_HEADER_LEN, FRAME_MAGIC};
 
 const DEFAULT_VIDEO_FRAME_DURATION_US: u64 = 16_666;
 
@@ -61,10 +59,16 @@ impl SharedGstreamerMedia {
             90000
         };
 
+        let video_fmtp = if spec.video_codec == "h264" {
+            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+        } else {
+            ""
+        };
         let video_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: video_mime.to_owned(),
                 clock_rate: video_clock_rate,
+                sdp_fmtp_line: video_fmtp.to_owned(),
                 ..Default::default()
             },
             "video".to_owned(),
@@ -194,7 +198,35 @@ async fn drain_rtp_packets(
     track: Arc<TrackLocalStaticRTP>,
     runtime: Arc<Mutex<MediaRuntimeStatus>>,
 ) {
+    let mut packet_count: u64 = 0;
     while let Some(raw_packet) = packet_rx.recv().await {
+        packet_count += 1;
+        if packet_count == 1 {
+            let hex = raw_packet
+                .iter()
+                .take(16)
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!(
+                "webrtc: drain_rtp_packets count={packet_count} pt={} len={} raw=[{hex}]",
+                raw_packet[1] & 0x7f,
+                raw_packet.len()
+            );
+        }
+        if packet_count % 1000 == 0 {
+            let hex = raw_packet
+                .iter()
+                .take(16)
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!(
+                "webrtc: drain_rtp_packets count={packet_count} pt={} len={} raw=[{hex}]",
+                raw_packet[1] & 0x7f,
+                raw_packet.len()
+            );
+        }
         let mut bytes = Bytes::from(raw_packet);
         match RtpPacket::unmarshal(&mut bytes) {
             Ok(packet) => {
@@ -388,10 +420,18 @@ fn build_video_caps(frame: &RawFramePacket) -> Result<gst::Caps> {
         let par_den = 1000i32;
         // Simplify by cancellation
         let gcd = gcd(par_num.abs(), par_den);
-        caps = caps.field("pixel-aspect-ratio", gst::Fraction::new(par_num / gcd, par_den / gcd));
+        caps = caps.field(
+            "pixel-aspect-ratio",
+            gst::Fraction::new(par_num / gcd, par_den / gcd),
+        );
         eprintln!(
             "CAPS_PAR: {}x{} format={} par={:.4} → pixel-aspect-ratio={}/{}",
-            frame.width, frame.height, format, par, par_num / gcd, par_den / gcd
+            frame.width,
+            frame.height,
+            format,
+            par,
+            par_num / gcd,
+            par_den / gcd
         );
     }
 
@@ -430,16 +470,12 @@ fn repack_video_payload(frame: &RawFramePacket) -> Option<Vec<u8>> {
 }
 
 fn set_pipeline_state(runtime: &Arc<Mutex<MediaRuntimeStatus>>, pipeline_state: &'static str) {
-    let mut guard = runtime
-        .lock()
-        .unwrap_or_else(crate::lock_recover);
+    let mut guard = runtime.lock().unwrap_or_else(crate::lock_recover);
     guard.pipeline_state = pipeline_state;
 }
 
 fn increment_dropped_video_frames(runtime: &Arc<Mutex<MediaRuntimeStatus>>, count: u64) {
-    let mut guard = runtime
-        .lock()
-        .unwrap_or_else(crate::lock_recover);
+    let mut guard = runtime.lock().unwrap_or_else(crate::lock_recover);
     guard.dropped_video_frames = guard.dropped_video_frames.saturating_add(count);
 }
 
@@ -787,7 +823,7 @@ mod tests {
             timestamp_us: 0,
             width: 4,
             height: 4,
-            pitch: 16, // 4 * 4 bytes per pixel = 16
+            pitch: 16,       // 4 * 4 bytes per pixel = 16
             pixel_format: 0, // BGRx → 4 bpp
             pixel_aspect_ratio: 1.0,
             payload: vec![0xAAu8; 64], // 4*4*4 = 64
@@ -804,7 +840,7 @@ mod tests {
             timestamp_us: 0,
             width: 4,
             height: 4,
-            pitch: 20, // wider than row_bytes (16)
+            pitch: 20,       // wider than row_bytes (16)
             pixel_format: 0, // BGRx → 4 bpp
             pixel_aspect_ratio: 1.0,
             payload: vec![0xBBu8; 80], // pitch * height = 80
@@ -851,7 +887,7 @@ mod tests {
             timestamp_us: 0,
             width: 4,
             height: 4,
-            pitch: 8, // 4 * 2 = 8
+            pitch: 8,        // 4 * 2 = 8
             pixel_format: 1, // RGB16 → 2 bpp
             pixel_aspect_ratio: 1.0,
             payload: vec![0xEEu8; 32],
@@ -868,7 +904,7 @@ mod tests {
             timestamp_us: 0,
             width: 4,
             height: 4,
-            pitch: 8, // 4 * 2 = 8
+            pitch: 8,        // 4 * 2 = 8
             pixel_format: 2, // xRGB1555 → 2 bpp
             pixel_aspect_ratio: 1.0,
             payload: vec![0xFFu8; 32],

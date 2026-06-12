@@ -44,10 +44,7 @@ impl RuntimeControl {
     }
 
     pub fn take_commands(&self) -> Vec<RuntimeCommand> {
-        let mut commands = self
-            .commands
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut commands = self.commands.lock().unwrap_or_else(crate::lock_recover);
         std::mem::take(&mut *commands)
     }
 
@@ -795,7 +792,10 @@ fn run_libretro_unsafe(
     let retro_get_system_av_info = unsafe {
         load_optional_symbol::<RetroGetSystemAvInfo>(&library, b"retro_get_system_av_info\0")
     };
-    eprintln!("AV_INFO_DEBUG: get_av_info present={}", retro_get_system_av_info.is_some());
+    eprintln!(
+        "AV_INFO_DEBUG: get_av_info present={}",
+        retro_get_system_av_info.is_some()
+    );
     {
         let mut context = callback_context()
             .lock()
@@ -954,47 +954,47 @@ fn run_libretro_unsafe(
 
     let (fps, sample_rate_hz, pixel_aspect_ratio, display_aspect_ratio) =
         if let Some(get_av_info) = retro_get_system_av_info {
-        let mut av_info = MaybeUninit::<RetroSystemAvInfo>::zeroed();
-        unsafe { get_av_info(av_info.as_mut_ptr()) };
-        let av_info = unsafe { av_info.assume_init() };
-        let fps = if av_info.timing.fps > 1.0 {
-            av_info.timing.fps as f32
+            let mut av_info = MaybeUninit::<RetroSystemAvInfo>::zeroed();
+            unsafe { get_av_info(av_info.as_mut_ptr()) };
+            let av_info = unsafe { av_info.assume_init() };
+            let fps = if av_info.timing.fps > 1.0 {
+                av_info.timing.fps as f32
+            } else {
+                config.fallback_fps
+            };
+            let sample_rate = if av_info.timing.sample_rate > 1.0 {
+                av_info.timing.sample_rate as u32
+            } else {
+                48_000
+            };
+            let dar = if av_info.geometry.aspect_ratio > 0.0 {
+                av_info.geometry.aspect_ratio
+            } else if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
+                av_info.geometry.base_width as f32 / av_info.geometry.base_height as f32
+            } else {
+                4.0 / 3.0 // fallback
+            };
+            // PAR is computed per-frame from actual pixel dimensions × DAR,
+            // not from av_info base dimensions (which may differ due to upscaling).
+            // Store DAR here; video_refresh_callback will compute PAR = DAR * height / width.
+            let par = if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
+                dar * av_info.geometry.base_height as f32 / av_info.geometry.base_width as f32
+            } else {
+                1.0
+            };
+            eprintln!(
+                "av_info: base={}x{} max={}x{} aspect={:.4} → PAR={:.4}",
+                av_info.geometry.base_width,
+                av_info.geometry.base_height,
+                av_info.geometry.max_width,
+                av_info.geometry.max_height,
+                av_info.geometry.aspect_ratio,
+                par
+            );
+            (fps, sample_rate, par, dar)
         } else {
-            config.fallback_fps
+            (config.fallback_fps, 48_000, 1.0, 4.0 / 3.0)
         };
-        let sample_rate = if av_info.timing.sample_rate > 1.0 {
-            av_info.timing.sample_rate as u32
-        } else {
-            48_000
-        };
-        let dar = if av_info.geometry.aspect_ratio > 0.0 {
-            av_info.geometry.aspect_ratio
-        } else if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
-            av_info.geometry.base_width as f32 / av_info.geometry.base_height as f32
-        } else {
-            4.0 / 3.0 // fallback
-        };
-        // PAR is computed per-frame from actual pixel dimensions × DAR,
-        // not from av_info base dimensions (which may differ due to upscaling).
-        // Store DAR here; video_refresh_callback will compute PAR = DAR * height / width.
-        let par = if av_info.geometry.base_width > 0 && av_info.geometry.base_height > 0 {
-            dar * av_info.geometry.base_height as f32 / av_info.geometry.base_width as f32
-        } else {
-            1.0
-        };
-        eprintln!(
-            "av_info: base={}x{} max={}x{} aspect={:.4} → PAR={:.4}",
-            av_info.geometry.base_width,
-            av_info.geometry.base_height,
-            av_info.geometry.max_width,
-            av_info.geometry.max_height,
-            av_info.geometry.aspect_ratio,
-            par
-        );
-        (fps, sample_rate, par, dar)
-    } else {
-        (config.fallback_fps, 48_000, 1.0, 4.0 / 3.0)
-    };
     let fps = fps.max(1.0);
     audio_bus.set_sample_rate_hz(sample_rate_hz);
 
@@ -1136,7 +1136,15 @@ fn run_libretro_unsafe(
 
 #[link(name = "GL")]
 unsafe extern "C" {
-    fn glReadPixels(x: i32, y: i32, width: i32, height: i32, format: u32, type_: u32, data: *mut c_void);
+    fn glReadPixels(
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: u32,
+        type_: u32,
+        data: *mut c_void,
+    );
     fn glGetIntegerv(pname: u32, data: *mut i32);
 }
 
@@ -1146,7 +1154,9 @@ const GL_VIEWPORT: u32 = 0x0BA2;
 
 fn read_hw_framebuffer(_hw: &crate::hw_render::HwRenderContext, frame_store: &LatestFrameStore) {
     let mut viewport = [0i32; 4];
-    unsafe { glGetIntegerv(GL_VIEWPORT, viewport.as_mut_ptr()); }
+    unsafe {
+        glGetIntegerv(GL_VIEWPORT, viewport.as_mut_ptr());
+    }
     let (x, y, w, h) = (viewport[0], viewport[1], viewport[2], viewport[3]);
     if w <= 0 || h <= 0 {
         return;
@@ -1155,7 +1165,15 @@ fn read_hw_framebuffer(_hw: &crate::hw_render::HwRenderContext, frame_store: &La
     let size = (w * h * 4) as usize;
     let mut pixels = vec![0u8; size];
     unsafe {
-        glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.as_mut_ptr() as *mut c_void);
+        glReadPixels(
+            x,
+            y,
+            w,
+            h,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels.as_mut_ptr() as *mut c_void,
+        );
     }
 
     // OpenGL returns bottom-left origin, flip to top-left for our pipeline
@@ -1164,10 +1182,18 @@ fn read_hw_framebuffer(_hw: &crate::hw_render::HwRenderContext, frame_store: &La
     for row in 0..h as usize {
         let src_row = (h as usize - 1 - row) * row_bytes;
         let dst_row = row * row_bytes;
-        flipped[dst_row..dst_row + row_bytes].copy_from_slice(&pixels[src_row..src_row + row_bytes]);
+        flipped[dst_row..dst_row + row_bytes]
+            .copy_from_slice(&pixels[src_row..src_row + row_bytes]);
     }
 
-    frame_store.publish(w as u32, h as u32, row_bytes, PixelFormat::Xrgb8888, 1.0, &flipped);
+    frame_store.publish(
+        w as u32,
+        h as u32,
+        row_bytes,
+        PixelFormat::Xrgb8888,
+        1.0,
+        &flipped,
+    );
 }
 
 fn clear_callback_context() {
@@ -1396,7 +1422,12 @@ unsafe extern "C" fn environment_callback(cmd: u32, data: *mut c_void) -> bool {
 
             // Create the EGL context
             let drm_path = "/dev/dri/renderD128";
-            let ctx = match crate::hw_render::HwRenderContext::create(drm_path, width, height, hw.context_type) {
+            let ctx = match crate::hw_render::HwRenderContext::create(
+                drm_path,
+                width,
+                height,
+                hw.context_type,
+            ) {
                 Ok(ctx) => Arc::new(ctx),
                 Err(err) => {
                     eprintln!("libretro HW render: failed to create EGL context: {err}");
@@ -1492,7 +1523,9 @@ unsafe extern "C" fn hw_get_current_framebuffer() -> usize {
     let context = callback_context()
         .lock()
         .unwrap_or_else(crate::lock_recover);
-    context.hw_context.as_ref()
+    context
+        .hw_context
+        .as_ref()
         .map(|ctx| ctx.get_framebuffer() as usize)
         .unwrap_or(0)
 }
@@ -1538,7 +1571,11 @@ unsafe extern "C" fn video_refresh_callback(
         let context = callback_context()
             .lock()
             .unwrap_or_else(crate::lock_recover);
-        (context.frame_store.clone(), context.pixel_format, context.display_aspect_ratio)
+        (
+            context.frame_store.clone(),
+            context.pixel_format,
+            context.display_aspect_ratio,
+        )
     };
 
     let Some(frame_store) = frame_store else {
@@ -1562,7 +1599,14 @@ unsafe extern "C" fn video_refresh_callback(
     // SAFETY: `data` comes from the core callback and points to at least `pitch * height` bytes
     // for the current video frame.
     let bytes = unsafe { std::slice::from_raw_parts(data as *const u8, byte_len) };
-    frame_store.publish(width, height, pitch, pixel_format, pixel_aspect_ratio, bytes);
+    frame_store.publish(
+        width,
+        height,
+        pitch,
+        pixel_format,
+        pixel_aspect_ratio,
+        bytes,
+    );
 }
 
 /// # Safety
@@ -1691,6 +1735,12 @@ unsafe extern "C" fn retro_log_print(level: u32, fmt: *const c_char) {
 }
 
 // Perf stubs: return 0
-unsafe extern "C" fn retro_perf_get_time_usec() -> u64 { 0 }
-unsafe extern "C" fn retro_perf_get_cpu_features() -> u64 { 0 }
-unsafe extern "C" fn retro_perf_get_counter() -> u64 { 0 }
+unsafe extern "C" fn retro_perf_get_time_usec() -> u64 {
+    0
+}
+unsafe extern "C" fn retro_perf_get_cpu_features() -> u64 {
+    0
+}
+unsafe extern "C" fn retro_perf_get_counter() -> u64 {
+    0
+}

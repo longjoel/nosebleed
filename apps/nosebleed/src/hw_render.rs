@@ -1,5 +1,5 @@
-use std::ffi::c_void;
 use std::ffi::CString;
+use std::ffi::c_void;
 
 /// Minimal EGL bindings — just what we need for a headless GBM context.
 mod egl {
@@ -43,18 +43,29 @@ mod egl {
         pub fn eglInitialize(dpy: EGLDisplay, major: *mut i32, minor: *mut i32) -> u32;
         pub fn eglTerminate(dpy: EGLDisplay) -> u32;
         pub fn eglChooseConfig(
-            dpy: EGLDisplay, attribs: *const i32, configs: *mut EGLConfig,
-            config_size: i32, num_config: *mut i32,
+            dpy: EGLDisplay,
+            attribs: *const i32,
+            configs: *mut EGLConfig,
+            config_size: i32,
+            num_config: *mut i32,
         ) -> u32;
         pub fn eglCreateContext(
-            dpy: EGLDisplay, config: EGLConfig, share: EGLContext, attribs: *const i32,
+            dpy: EGLDisplay,
+            config: EGLConfig,
+            share: EGLContext,
+            attribs: *const i32,
         ) -> EGLContext;
         pub fn eglDestroyContext(dpy: EGLDisplay, ctx: EGLContext) -> u32;
         pub fn eglMakeCurrent(
-            dpy: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext,
+            dpy: EGLDisplay,
+            draw: EGLSurface,
+            read: EGLSurface,
+            ctx: EGLContext,
         ) -> u32;
         pub fn eglCreatePbufferSurface(
-            dpy: EGLDisplay, config: EGLConfig, attribs: *const i32,
+            dpy: EGLDisplay,
+            config: EGLConfig,
+            attribs: *const i32,
         ) -> EGLSurface;
         pub fn eglDestroySurface(dpy: EGLDisplay, surf: EGLSurface) -> u32;
         pub fn eglBindAPI(api: u32) -> u32;
@@ -82,8 +93,11 @@ mod gbm {
         pub fn gbm_create_device(fd: i32) -> GbmDevice;
         pub fn gbm_device_destroy(dev: GbmDevice);
         pub fn gbm_surface_create(
-            dev: GbmDevice, width: u32, height: u32,
-            format: u32, flags: u32,
+            dev: GbmDevice,
+            width: u32,
+            height: u32,
+            format: u32,
+            flags: u32,
         ) -> GbmSurface;
         pub fn gbm_surface_destroy(surf: GbmSurface);
     }
@@ -110,7 +124,12 @@ unsafe impl Sync for HwRenderContext {}
 
 impl HwRenderContext {
     /// Create a headless EGL context on the given DRM render node.
-    pub fn create(drm_path: &str, width: u32, height: u32, context_type: u32) -> Result<Self, String> {
+    pub fn create(
+        drm_path: &str,
+        width: u32,
+        height: u32,
+        context_type: u32,
+    ) -> Result<Self, String> {
         use std::fs::OpenOptions;
         use std::os::fd::AsRawFd;
 
@@ -127,10 +146,18 @@ impl HwRenderContext {
         std::mem::forget(file);
 
         let gbm_surf = unsafe {
-            gbm::gbm_surface_create(gbm_dev, width, height, 0x34325258, gbm::GBM_BO_USE_RENDERING)
+            gbm::gbm_surface_create(
+                gbm_dev,
+                width,
+                height,
+                0x34325258,
+                gbm::GBM_BO_USE_RENDERING,
+            )
         };
         if gbm_surf.is_null() {
-            unsafe { gbm::gbm_device_destroy(gbm_dev); }
+            unsafe {
+                gbm::gbm_device_destroy(gbm_dev);
+            }
             return Err("gbm_surface_create failed".into());
         }
 
@@ -161,20 +188,35 @@ impl HwRenderContext {
             _ => egl::EGL_OPENGL_ES2_BIT,
         };
         let config_attribs = [
-            egl::EGL_SURFACE_TYPE, egl::EGL_PBUFFER_BIT,
-            egl::EGL_RENDERABLE_TYPE, renderable_bit,
-            egl::EGL_RED_SIZE, 8,
-            egl::EGL_GREEN_SIZE, 8,
-            egl::EGL_BLUE_SIZE, 8,
-            egl::EGL_ALPHA_SIZE, 8,
-            egl::EGL_DEPTH_SIZE, 24,
+            egl::EGL_SURFACE_TYPE,
+            egl::EGL_PBUFFER_BIT,
+            egl::EGL_RENDERABLE_TYPE,
+            renderable_bit,
+            egl::EGL_RED_SIZE,
+            8,
+            egl::EGL_GREEN_SIZE,
+            8,
+            egl::EGL_BLUE_SIZE,
+            8,
+            egl::EGL_ALPHA_SIZE,
+            8,
+            egl::EGL_DEPTH_SIZE,
+            24,
             egl::EGL_NONE,
         ];
         let mut config: egl::EGLConfig = std::ptr::null_mut();
         let mut num_configs = 0i32;
         if unsafe {
-            egl::eglChooseConfig(display, config_attribs.as_ptr(), &mut config, 1, &mut num_configs)
-        } == egl::EGL_FALSE || num_configs == 0 {
+            egl::eglChooseConfig(
+                display,
+                config_attribs.as_ptr(),
+                &mut config,
+                1,
+                &mut num_configs,
+            )
+        } == egl::EGL_FALSE
+            || num_configs == 0
+        {
             Self::cleanup_all(display, gbm_dev, gbm_surf);
             return Err("eglChooseConfig failed".into());
         }
@@ -185,13 +227,21 @@ impl HwRenderContext {
         } else {
             vec![egl::EGL_NONE]
         };
-        let context = unsafe { egl::eglCreateContext(display, config, egl::EGL_NO_CONTEXT, ctx_attribs.as_ptr()) };
+        let context = unsafe {
+            egl::eglCreateContext(display, config, egl::EGL_NO_CONTEXT, ctx_attribs.as_ptr())
+        };
         if context == egl::EGL_NO_CONTEXT {
             Self::cleanup_all(display, gbm_dev, gbm_surf);
             return Err("eglCreateContext failed".into());
         }
 
-        let pb_attribs = [egl::EGL_WIDTH, width as i32, egl::EGL_HEIGHT, height as i32, egl::EGL_NONE];
+        let pb_attribs = [
+            egl::EGL_WIDTH,
+            width as i32,
+            egl::EGL_HEIGHT,
+            height as i32,
+            egl::EGL_NONE,
+        ];
         let surface = unsafe { egl::eglCreatePbufferSurface(display, config, pb_attribs.as_ptr()) };
         if surface == egl::EGL_NO_SURFACE {
             Self::cleanup_all_with_ctx(display, context, gbm_dev, gbm_surf);
@@ -217,19 +267,34 @@ impl HwRenderContext {
 
     fn cleanup_gbm(gbm_dev: gbm::GbmDevice, gbm_surf: gbm::GbmSurface) {
         unsafe {
-            if !gbm_surf.is_null() { gbm::gbm_surface_destroy(gbm_surf); }
-            if !gbm_dev.is_null() { gbm::gbm_device_destroy(gbm_dev); }
+            if !gbm_surf.is_null() {
+                gbm::gbm_surface_destroy(gbm_surf);
+            }
+            if !gbm_dev.is_null() {
+                gbm::gbm_device_destroy(gbm_dev);
+            }
         }
     }
 
     fn cleanup_all(display: egl::EGLDisplay, gbm_dev: gbm::GbmDevice, gbm_surf: gbm::GbmSurface) {
-        unsafe { if display != egl::EGL_NO_DISPLAY { egl::eglTerminate(display); } }
+        unsafe {
+            if display != egl::EGL_NO_DISPLAY {
+                egl::eglTerminate(display);
+            }
+        }
         Self::cleanup_gbm(gbm_dev, gbm_surf);
     }
 
-    fn cleanup_all_with_ctx(display: egl::EGLDisplay, context: egl::EGLContext, gbm_dev: gbm::GbmDevice, gbm_surf: gbm::GbmSurface) {
+    fn cleanup_all_with_ctx(
+        display: egl::EGLDisplay,
+        context: egl::EGLContext,
+        gbm_dev: gbm::GbmDevice,
+        gbm_surf: gbm::GbmSurface,
+    ) {
         unsafe {
-            if context != egl::EGL_NO_CONTEXT { egl::eglDestroyContext(display, context); }
+            if context != egl::EGL_NO_CONTEXT {
+                egl::eglDestroyContext(display, context);
+            }
         }
         Self::cleanup_all(display, gbm_dev, gbm_surf);
     }
@@ -241,18 +306,35 @@ impl HwRenderContext {
     }
 
     /// Returns the framebuffer ID (always 0 for a pbuffer surface in EGL)
-    pub fn get_framebuffer(&self) -> u32 { 0 }
+    pub fn get_framebuffer(&self) -> u32 {
+        0
+    }
 }
 
 impl Drop for HwRenderContext {
     fn drop(&mut self) {
         unsafe {
-            egl::eglMakeCurrent(self.display, egl::EGL_NO_SURFACE, egl::EGL_NO_SURFACE, egl::EGL_NO_CONTEXT);
-            if self.surface != egl::EGL_NO_SURFACE { egl::eglDestroySurface(self.display, self.surface); }
-            if self.context != egl::EGL_NO_CONTEXT { egl::eglDestroyContext(self.display, self.context); }
-            if self.display != egl::EGL_NO_DISPLAY { egl::eglTerminate(self.display); }
-            if !self._gbm_surface.is_null() { gbm::gbm_surface_destroy(self._gbm_surface); }
-            if !self._gbm_device.is_null() { gbm::gbm_device_destroy(self._gbm_device); }
+            egl::eglMakeCurrent(
+                self.display,
+                egl::EGL_NO_SURFACE,
+                egl::EGL_NO_SURFACE,
+                egl::EGL_NO_CONTEXT,
+            );
+            if self.surface != egl::EGL_NO_SURFACE {
+                egl::eglDestroySurface(self.display, self.surface);
+            }
+            if self.context != egl::EGL_NO_CONTEXT {
+                egl::eglDestroyContext(self.display, self.context);
+            }
+            if self.display != egl::EGL_NO_DISPLAY {
+                egl::eglTerminate(self.display);
+            }
+            if !self._gbm_surface.is_null() {
+                gbm::gbm_surface_destroy(self._gbm_surface);
+            }
+            if !self._gbm_device.is_null() {
+                gbm::gbm_device_destroy(self._gbm_device);
+            }
         }
     }
 }

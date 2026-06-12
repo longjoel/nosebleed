@@ -1476,6 +1476,7 @@ dependencies = [
  "sha2",
  "tokio",
  "webrtc",
+ "webrtc-ice",
  "webrtc-util",
 ]
 

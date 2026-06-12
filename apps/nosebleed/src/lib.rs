@@ -11,7 +11,9 @@ use std::sync::PoisonError;
 /// inner value. This should never silently surrender — every poison event is
 /// a sign of a panic on the lock-holding thread and deserves visibility.
 pub fn lock_recover<G>(err: PoisonError<G>) -> G {
-    eprintln!("[nosebleed] recovered from poisoned lock — a prior panic occurred on the lock-holding thread");
+    eprintln!(
+        "[nosebleed] recovered from poisoned lock — a prior panic occurred on the lock-holding thread"
+    );
     err.into_inner()
 }
 

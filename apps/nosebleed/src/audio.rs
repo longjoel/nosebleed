@@ -51,10 +51,7 @@ impl AudioBus {
         let mut packets = Vec::new();
 
         {
-            let mut guard = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut guard = self.state.lock().unwrap_or_else(crate::lock_recover);
 
             guard
                 .pending_samples

@@ -20,10 +20,10 @@ use webrtc::api::media_engine::{MIME_TYPE_H264, MediaEngine};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -31,6 +31,8 @@ use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
 use webrtc::track::track_local::TrackLocal;
+use webrtc_ice::network_type::NetworkType;
+use webrtc_ice::udp_network::{EphemeralUDP, UDPNetwork};
 
 use crate::arcade::{ArcadeError, ArcadeService, Side};
 use crate::auth::{MatchClaims, MatchRole, validate_match_token};
@@ -106,12 +108,18 @@ impl ServerState {
         )?));
 
         let mut setting_engine = SettingEngine::default();
+        setting_engine.set_network_types(vec![NetworkType::Udp4, NetworkType::Tcp4]);
+        let udp_range = EphemeralUDP::new(8100, 8110)
+            .context("failed to configure ICE UDP port range 8100-8110")?;
+        eprintln!(
+            "webrtc: port_range={}..{}",
+            udp_range.port_min(),
+            udp_range.port_max()
+        );
+        setting_engine.set_udp_network(UDPNetwork::Ephemeral(udp_range));
         if let Some(ip) = &public_ip {
             eprintln!("nat_1to1_ips: setting public IP to {ip}");
-            setting_engine.set_nat_1to1_ips(
-                vec![ip.clone()],
-                RTCIceCandidateType::Host,
-            );
+            setting_engine.set_nat_1to1_ips(vec![ip.clone()], RTCIceCandidateType::Host);
         }
 
         Ok(Self {
@@ -153,7 +161,12 @@ impl ServerState {
                         RTPCodecType::Video,
                     )
                     .ok();
-                Arc::new(APIBuilder::new().with_media_engine(media_engine).with_setting_engine(setting_engine).build())
+                Arc::new(
+                    APIBuilder::new()
+                        .with_media_engine(media_engine)
+                        .with_setting_engine(setting_engine)
+                        .build(),
+                )
             },
         })
     }
@@ -327,7 +340,7 @@ async fn session_snapshot(State(state): State<ServerState>) -> Response {
                     if off + 3 < frame.payload.len() {
                         rgb.push(frame.payload[off + 2]); // R
                         rgb.push(frame.payload[off + 1]); // G
-                        rgb.push(frame.payload[off]);     // B
+                        rgb.push(frame.payload[off]); // B
                     }
                 }
             }
@@ -339,7 +352,8 @@ async fn session_snapshot(State(state): State<ServerState>) -> Response {
                 for x in 0..pixels_per_row {
                     let off = row_start + x * 2;
                     if off + 1 < frame.payload.len() {
-                        let pixel = u16::from_le_bytes([frame.payload[off], frame.payload[off + 1]]);
+                        let pixel =
+                            u16::from_le_bytes([frame.payload[off], frame.payload[off + 1]]);
                         rgb.push(((pixel >> 11) as u8) << 3); // R 5→8
                         rgb.push((((pixel >> 5) & 0x3F) as u8) << 2); // G 6→8
                         rgb.push(((pixel & 0x1F) as u8) << 3); // B 5→8
@@ -354,21 +368,31 @@ async fn session_snapshot(State(state): State<ServerState>) -> Response {
                 for x in 0..pixels_per_row {
                     let off = row_start + x * 2;
                     if off + 1 < frame.payload.len() {
-                        let pixel = u16::from_le_bytes([frame.payload[off], frame.payload[off + 1]]);
+                        let pixel =
+                            u16::from_le_bytes([frame.payload[off], frame.payload[off + 1]]);
                         rgb.push((((pixel >> 10) & 0x1F) as u8) << 3); // R 5→8
-                        rgb.push((((pixel >> 5) & 0x1F) as u8) << 3);  // G 5→8
-                        rgb.push(((pixel & 0x1F) as u8) << 3);          // B 5→8
+                        rgb.push((((pixel >> 5) & 0x1F) as u8) << 3); // G 5→8
+                        rgb.push(((pixel & 0x1F) as u8) << 3); // B 5→8
                     }
                 }
             }
         }
-        _ => return (StatusCode::INTERNAL_SERVER_ERROR, "unsupported pixel format").into_response(),
+        _ => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "unsupported pixel format",
+            )
+                .into_response();
+        }
     }
 
     match image::RgbImage::from_raw(width, height, rgb) {
         Some(img) => {
             let mut png_bytes = std::io::Cursor::new(Vec::new());
-            if img.write_to(&mut png_bytes, image::ImageFormat::Png).is_err() {
+            if img
+                .write_to(&mut png_bytes, image::ImageFormat::Png)
+                .is_err()
+            {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "png encode failed").into_response();
             }
             (
@@ -378,7 +402,11 @@ async fn session_snapshot(State(state): State<ServerState>) -> Response {
             )
                 .into_response()
         }
-        None => (StatusCode::INTERNAL_SERVER_ERROR, "invalid frame dimensions").into_response(),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid frame dimensions",
+        )
+            .into_response(),
     }
 }
 
@@ -493,7 +521,11 @@ async fn webrtc_session(
     State(state): State<ServerState>,
     Json(offer): Json<WebRtcOffer>,
 ) -> Response {
-    eprintln!("webrtc_session: offer.kind={} sdp_len={}", offer.kind, offer.sdp.len());
+    eprintln!(
+        "webrtc_session: offer.kind={} sdp_len={}",
+        offer.kind,
+        offer.sdp.len()
+    );
     if offer.kind != "offer" {
         return (StatusCode::BAD_REQUEST, "sdp type must be offer").into_response();
     }
@@ -555,56 +587,54 @@ async fn webrtc_session(
     };
 
     {
-            let Some(gstreamer_media) = state.gstreamer_media.as_ref() else {
+        let Some(gstreamer_media) = state.gstreamer_media.as_ref() else {
+            cleanup_input_source(&state, &source_id);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "gstreamer backend selected but runtime was unavailable".to_string(),
+            )
+                .into_response();
+        };
+
+        let runtime = gstreamer_media.snapshot();
+        eprintln!(
+            "starting gstreamer webrtc session: video_encoder={} audio_encoder={} pipeline_state={} video_pipeline={} audio_pipeline={}",
+            runtime.video_encoder.unwrap_or("unknown"),
+            runtime.audio_encoder.unwrap_or("unknown"),
+            runtime.pipeline_state,
+            runtime.video_pipeline.as_deref().unwrap_or("<none>"),
+            runtime.audio_pipeline.as_deref().unwrap_or("<none>"),
+        );
+
+        let video_track = gstreamer_media.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+        let video_sender = match peer_connection.add_track(video_track).await {
+            Ok(sender) => sender,
+            Err(err) => {
+                eprintln!("gstreamer webrtc: failed to attach video track: {err:#}");
                 cleanup_input_source(&state, &source_id);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "gstreamer backend selected but runtime was unavailable".to_string(),
+                    format!("failed to attach gstreamer video track: {err:#}"),
                 )
                     .into_response();
-            };
+            }
+        };
+        tokio::spawn(async move { while video_sender.read_rtcp().await.is_ok() {} });
 
-            let runtime = gstreamer_media.snapshot();
-            eprintln!(
-                "starting gstreamer webrtc session: video_encoder={} audio_encoder={} pipeline_state={} video_pipeline={} audio_pipeline={}",
-                runtime.video_encoder.unwrap_or("unknown"),
-                runtime.audio_encoder.unwrap_or("unknown"),
-                runtime.pipeline_state,
-                runtime.video_pipeline.as_deref().unwrap_or("<none>"),
-                runtime.audio_pipeline.as_deref().unwrap_or("<none>"),
-            );
-
-            let video_track =
-                gstreamer_media.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
-            let video_sender = match peer_connection.add_track(video_track).await {
-                Ok(sender) => sender,
-                Err(err) => {
-                    eprintln!("gstreamer webrtc: failed to attach video track: {err:#}");
-                    cleanup_input_source(&state, &source_id);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("failed to attach gstreamer video track: {err:#}"),
-                    )
-                        .into_response();
-                }
-            };
-            tokio::spawn(async move { while video_sender.read_rtcp().await.is_ok() {} });
-
-            let audio_track =
-                gstreamer_media.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
-            let audio_sender = match peer_connection.add_track(audio_track).await {
-                Ok(sender) => sender,
-                Err(err) => {
-                    eprintln!("gstreamer webrtc: failed to attach audio track: {err:#}");
-                    cleanup_input_source(&state, &source_id);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("failed to attach gstreamer audio track: {err:#}"),
-                    )
-                        .into_response();
-                }
-            };
-            tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
+        let audio_track = gstreamer_media.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>;
+        let audio_sender = match peer_connection.add_track(audio_track).await {
+            Ok(sender) => sender,
+            Err(err) => {
+                eprintln!("gstreamer webrtc: failed to attach audio track: {err:#}");
+                cleanup_input_source(&state, &source_id);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to attach gstreamer audio track: {err:#}"),
+                )
+                    .into_response();
+            }
+        };
+        tokio::spawn(async move { while audio_sender.read_rtcp().await.is_ok() {} });
     }
 
     // In MediaTracks mode the browser creates a negotiated "input" data channel
@@ -691,6 +721,7 @@ async fn webrtc_session(
         let source_for_close = source_id.clone();
         let cleanup_for_close = cleanup_once.clone();
         peer_connection.on_peer_connection_state_change(Box::new(move |connection_state| {
+            eprintln!("webrtc: pc_state={rtc_session_id} => {connection_state:?}");
             let state_for_close = state_for_close.clone();
             let source_for_close = source_for_close.clone();
             let cleanup_for_close = cleanup_for_close.clone();
@@ -816,44 +847,44 @@ async fn webrtc_session(
     match negotiate_webrtc_offer(&peer_connection, offer.sdp).await {
         Ok(answer) => {
             _cleanup.disarm();
+            eprintln!(
+                "webrtc_session: answer sdp_len={} has_video={} has_audio={}",
+                answer.sdp.len(),
+                answer.sdp.contains("msid:nosebleed video"),
+                answer.sdp.contains("msid:nosebleed audio"),
+            );
             Json(answer).into_response()
         }
         Err(err) => {
             eprintln!("gstreamer webrtc: session negotiation failed: {err:#}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("{err:#}"),
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")).into_response()
         }
     }
 }
 
 async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnection>> {
-    let mut ice_servers = vec![
-        RTCIceServer {
-            urls: vec![
-                "stun:stun.l.google.com:19302".to_string(),
-                "stun:stun1.l.google.com:19302".to_string(),
-            ],
-            ..Default::default()
-        },
-    ];
+    let mut ice_servers = vec![RTCIceServer {
+        urls: vec![
+            "stun:stun.l.google.com:19302".to_string(),
+            "stun:stun1.l.google.com:19302".to_string(),
+        ],
+        ..Default::default()
+    }];
 
     // Only include TURN server when a credential is configured.
     // An empty credential causes webrtc-rs to reject the config
     // with "turn server credentials required".
     let host = &state.turn_host;
     if !state.turn_credential.is_empty() {
-        let mut urls = vec![
-            format!("turns:{host}:443?transport=tcp"),
-            format!("turns:{host}:5349?transport=tcp"),
-        ];
-        // Internal plain TURN URL for Docker container → host communication.
-        // Avoids hairpin NAT issues. Uses the Docker host gateway IP.
-        if !state.turn_url_internal.is_empty() {
-            urls.push(state.turn_url_internal.clone());
-        }
+        // Server-side TURN should prefer the internal Docker→host route.
+        // Mixing unreachable public TURNS endpoints with the internal TURN URL
+        // can leave webrtc-rs with no relay candidates even though coturn is
+        // reachable on the host gateway.
+        let urls = if !state.turn_url_internal.is_empty() {
+            vec![state.turn_url_internal.clone()]
+        } else {
+            vec![format!("turns:{host}:5349?transport=tcp")]
+        };
         ice_servers.push(RTCIceServer {
             urls,
             username: "nosebleed".to_string(),
@@ -876,10 +907,7 @@ async fn create_peer_connection(state: &ServerState) -> Result<Arc<RTCPeerConnec
 
 /// Negotiate the SDP exchange with the peer: set remote description, create
 /// answer, gather ICE candidates, and return the local answer.
-async fn negotiate_webrtc_offer(
-    pc: &RTCPeerConnection,
-    offer_sdp: String,
-) -> Result<WebRtcAnswer> {
+async fn negotiate_webrtc_offer(pc: &RTCPeerConnection, offer_sdp: String) -> Result<WebRtcAnswer> {
     let remote_description = RTCSessionDescription::offer(offer_sdp)
         .map_err(|err| anyhow!("invalid remote offer: {err:#}"))?;
     pc.set_remote_description(remote_description)
@@ -1523,10 +1551,7 @@ mod tests {
     fn test_authorize_stream_claims_invalid_token() {
         let state = dummy_server_state(dummy_auth_config(true));
         let result = authorize_stream_claims(&state, Some("not.a.real.token"));
-        assert!(
-            result.is_err(),
-            "invalid token should be rejected"
-        );
+        assert!(result.is_err(), "invalid token should be rejected");
     }
 
     // ── 6. SessionCleanup: armed drop cleans up session ────────────────────
@@ -1748,12 +1773,7 @@ mod tests {
         );
 
         // Different player — should fail
-        let result = registry.reserve_ports(
-            "source-3",
-            "player-2",
-            &[1],
-            Duration::from_secs(30),
-        );
+        let result = registry.reserve_ports("source-3", "player-2", &[1], Duration::from_secs(30));
         assert!(
             result.is_err(),
             "different player should fail to reserve occupied port"
@@ -1805,7 +1825,8 @@ mod tests {
 
     #[test]
     fn test_webrtc_offer_deserialize() {
-        let json = r#"{"type":"offer","sdp":"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n","video_mode":"h264"}"#;
+        let json =
+            r#"{"type":"offer","sdp":"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n","video_mode":"h264"}"#;
         let offer: WebRtcOffer = serde_json::from_str(json).expect("deserialize offer");
         assert_eq!(offer.kind, "offer");
         assert!(offer.sdp.contains("v=0"));
@@ -1815,7 +1836,8 @@ mod tests {
     #[test]
     fn test_webrtc_offer_deserialize_no_video_mode() {
         let json = r#"{"type":"offer","sdp":"v=0"}"#;
-        let offer: WebRtcOffer = serde_json::from_str(json).expect("deserialize offer without video_mode");
+        let offer: WebRtcOffer =
+            serde_json::from_str(json).expect("deserialize offer without video_mode");
         assert_eq!(offer.kind, "offer");
         assert_eq!(offer.sdp, "v=0");
         assert_eq!(offer.video_mode, None);

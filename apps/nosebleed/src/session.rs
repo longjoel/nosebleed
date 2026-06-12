@@ -103,10 +103,7 @@ impl SessionManager {
         self.reap_finished_runtime();
 
         let existing = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             if state.active.is_some() && !force_restart {
                 return Err(anyhow!("session already running; set force_restart=true"));
             }
@@ -114,10 +111,7 @@ impl SessionManager {
         };
         if let Some(runtime) = existing {
             let exit = join_runtime(runtime);
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             state.last_exit = Some(exit);
         }
 
@@ -134,10 +128,7 @@ impl SessionManager {
         );
 
         let started_at_unix_ms = now_unix_ms();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
         state.active = Some(ActiveRuntime {
             launch,
             session_dir,
@@ -167,19 +158,13 @@ impl SessionManager {
     pub fn stop(&self) -> Status {
         self.reap_finished_runtime();
         let active = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             state.active.take()
         };
 
         if let Some(runtime) = active {
             let exit = join_runtime(runtime);
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             state.last_exit = Some(exit);
             snapshot_locked(&state)
         } else {
@@ -189,19 +174,13 @@ impl SessionManager {
 
     pub fn status(&self) -> Status {
         self.reap_finished_runtime();
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let state = self.state.lock().unwrap_or_else(crate::lock_recover);
         snapshot_locked(&state)
     }
 
     pub fn request_reset(&self) -> Result<()> {
         self.reap_finished_runtime();
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let state = self.state.lock().unwrap_or_else(crate::lock_recover);
         let runtime = state
             .active
             .as_ref()
@@ -212,10 +191,7 @@ impl SessionManager {
 
     pub fn request_save_state(&self, slot: u8) -> Result<()> {
         self.reap_finished_runtime();
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let state = self.state.lock().unwrap_or_else(crate::lock_recover);
         let runtime = state
             .active
             .as_ref()
@@ -226,10 +202,7 @@ impl SessionManager {
 
     pub fn request_load_state(&self, slot: u8) -> Result<()> {
         self.reap_finished_runtime();
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let state = self.state.lock().unwrap_or_else(crate::lock_recover);
         let runtime = state
             .active
             .as_ref()
@@ -240,10 +213,7 @@ impl SessionManager {
 
     pub fn shutdown_and_join(&self) -> Result<()> {
         let active = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             state.active.take()
         };
 
@@ -258,10 +228,7 @@ impl SessionManager {
 
     fn reap_finished_runtime(&self) {
         let finished = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             let should_take = state
                 .active
                 .as_ref()
@@ -275,10 +242,7 @@ impl SessionManager {
 
         if let Some(runtime) = finished {
             let exit = join_runtime(runtime);
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(crate::lock_recover);
+            let mut state = self.state.lock().unwrap_or_else(crate::lock_recover);
             state.last_exit = Some(exit);
         }
     }
@@ -503,10 +467,7 @@ mod tests {
         assert_eq!(status.width, 320);
         assert_eq!(status.height, 240);
         assert_eq!(status.started_at_unix_ms, Some(1000));
-        assert_eq!(
-            status.session_dir,
-            Some("/tmp/session-1".to_string())
-        );
+        assert_eq!(status.session_dir, Some("/tmp/session-1".to_string()));
         assert_eq!(status.last_exit, Some("crashed".to_string()));
     }
 
@@ -533,10 +494,7 @@ mod tests {
         let status = snapshot_locked(&state);
         assert!(status.running, "should be running");
         assert_eq!(status.mode, "libretro");
-        assert_eq!(
-            status.core,
-            Some("/cores/genesis_libretro.so".to_string())
-        );
+        assert_eq!(status.core, Some("/cores/genesis_libretro.so".to_string()));
         assert_eq!(status.content, Some("/roms/sonic.bin".to_string()));
         assert_eq!(status.fps, 60.0);
     }
@@ -572,7 +530,10 @@ mod tests {
     #[test]
     fn test_now_unix_ms_returns_nonzero() {
         let ts = now_unix_ms();
-        assert!(ts > 1_700_000_000_000, "should be a recent unix timestamp in ms");
+        assert!(
+            ts > 1_700_000_000_000,
+            "should be a recent unix timestamp in ms"
+        );
     }
 
     // ── start_from_request config merging ───────────────────────────────
@@ -623,10 +584,7 @@ mod tests {
         assert_eq!(merged.fps, 60.0);
         assert_eq!(merged.width, 640);
         assert_eq!(merged.height, 480);
-        assert_eq!(
-            merged.workspace.root_dir,
-            Some(PathBuf::from("/sessions"))
-        );
+        assert_eq!(merged.workspace.root_dir, Some(PathBuf::from("/sessions")));
     }
 
     #[test]

@@ -134,10 +134,9 @@ async fn main() -> Result<()> {
         .start(config.launch.clone(), true)
         .context("failed to start initial runtime session")?;
 
-    let turn_credential = std::env::var("NOSEBLEED_TURN_SECRET")
-        .unwrap_or_else(|_| "".to_string());
-    let turn_host = std::env::var("NOSEBLEED_TURN_HOST")
-        .unwrap_or_else(|_| "lngnckr.tech".to_string());
+    let turn_credential = std::env::var("NOSEBLEED_TURN_SECRET").unwrap_or_else(|_| "".to_string());
+    let turn_host =
+        std::env::var("NOSEBLEED_TURN_HOST").unwrap_or_else(|_| "lngnckr.tech".to_string());
     let turn_url_internal = std::env::var("NOSEBLEED_TURN_URL_INTERNAL")
         .ok()
         .filter(|s| !s.is_empty())
@@ -158,7 +157,6 @@ async fn main() -> Result<()> {
         turn_host,
         turn_url_internal,
         public_ip,
-
     )?;
     eprintln!("starting server: listen={}", config.listen);
     eprintln!(

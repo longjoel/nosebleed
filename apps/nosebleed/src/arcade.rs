@@ -248,10 +248,7 @@ impl ArcadeService {
 
     pub fn overview(&self) -> ArcadeOverview {
         let now = now_unix_ms();
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut inner = self.inner.lock().unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let day = day_key(now);
@@ -272,10 +269,7 @@ impl ArcadeService {
 
     pub fn machine(&self, machine_id: u32) -> Result<MachineDetailView, ArcadeError> {
         let now = now_unix_ms();
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut inner = self.inner.lock().unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let day = day_key(now);
@@ -295,10 +289,7 @@ impl ArcadeService {
     ) -> Result<JoinResult, ArcadeError> {
         let now = now_unix_ms();
         let (display_name, player_key) = normalize_player_name(&player_name)?;
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut inner = self.inner.lock().unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         if let Some(until) = inner.cooldown_until.get(&player_key) {
@@ -374,10 +365,7 @@ impl ArcadeService {
         }
 
         let now = now_unix_ms();
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut inner = self.inner.lock().unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let machine_index = find_machine_index(&inner, machine_id)?;
@@ -434,10 +422,7 @@ impl ArcadeService {
         }
 
         let now = now_unix_ms();
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut inner = self.inner.lock().unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let machine_index = find_machine_index(&inner, machine_id)?;
@@ -502,10 +487,7 @@ impl ArcadeService {
         right_score: u32,
     ) -> Result<MachineDetailView, ArcadeError> {
         let now = now_unix_ms();
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut inner = self.inner.lock().unwrap_or_else(crate::lock_recover);
         self.housekeeping(&mut inner, now);
 
         let round_id = inner.next_round_id;
@@ -966,7 +948,10 @@ mod tests {
             assert_eq!(machine.status, MachineStatus::FreePlay);
             assert!(machine.left_player.is_none());
             assert!(machine.right_player.is_none());
-            assert_eq!(machine.left_queue_len, 0, "initial left queue should be empty");
+            assert_eq!(
+                machine.left_queue_len, 0,
+                "initial left queue should be empty"
+            );
             assert_eq!(machine.right_queue_len, 0);
         }
     }
@@ -1010,8 +995,7 @@ mod tests {
         let join = svc
             .join_queue(1, "Bob".into(), Side::Right)
             .expect("Bob joins right");
-        svc.claim_seat(1, join.ticket_id)
-            .expect("Bob claims seat");
+        svc.claim_seat(1, join.ticket_id).expect("Bob claims seat");
 
         // Bob tries to claim again — should fail (no active call)
         let result = svc.claim_seat(1, join.ticket_id);
@@ -1063,15 +1047,11 @@ mod tests {
         let join = svc
             .join_queue(1, "Charlie".into(), Side::Right)
             .expect("Charlie joins");
-        svc.claim_seat(1, join.ticket_id)
-            .expect("Charlie claims");
+        svc.claim_seat(1, join.ticket_id).expect("Charlie claims");
 
         // Charlie tries to queue again
         let result = svc.join_queue(1, "Charlie".into(), Side::Left);
-        assert!(
-            result.is_err(),
-            "already seated player should be rejected"
-        );
+        assert!(result.is_err(), "already seated player should be rejected");
         if let Err(err) = result {
             assert!(matches!(err, ArcadeError::Conflict(_)));
         }
@@ -1107,7 +1087,11 @@ mod tests {
         let machine = svc
             .leave_queue(1, join.ticket_id)
             .expect("Eve leaves queue");
-        assert_eq!(machine.left_queue.len(), 0, "leave queue should clear left queue");
+        assert_eq!(
+            machine.left_queue.len(),
+            0,
+            "leave queue should clear left queue"
+        );
     }
 
     #[test]
@@ -1123,10 +1107,7 @@ mod tests {
         let svc = service();
         let result = svc.leave_queue(1, 0);
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ArcadeError::BadRequest(_)
-        ));
+        assert!(matches!(result.unwrap_err(), ArcadeError::BadRequest(_)));
     }
 
     // ── Machine not found ───────────────────────────────────────────────
@@ -1143,8 +1124,7 @@ mod tests {
 
     #[test]
     fn test_normalize_player_name_trims_and_downcases_key() {
-        let (display, key) =
-            normalize_player_name("  Alice  ").expect("normalize name");
+        let (display, key) = normalize_player_name("  Alice  ").expect("normalize name");
         assert_eq!(display, "Alice");
         assert_eq!(key, "alice");
     }
@@ -1159,8 +1139,7 @@ mod tests {
     #[test]
     fn test_normalize_player_name_truncates_long_names() {
         let long = "a".repeat(50);
-        let (display, key) =
-            normalize_player_name(&long).expect("normalize long name");
+        let (display, key) = normalize_player_name(&long).expect("normalize long name");
         assert_eq!(display.len(), MAX_PLAYER_NAME_LEN);
         assert_eq!(key.len(), MAX_PLAYER_NAME_LEN);
     }
@@ -1237,8 +1216,7 @@ mod tests {
         let join = svc
             .join_queue(1, "Frank".into(), Side::Left)
             .expect("Frank joins");
-        svc.claim_seat(1, join.ticket_id)
-            .expect("Frank claims");
+        svc.claim_seat(1, join.ticket_id).expect("Frank claims");
 
         let result = svc.end_round(1, Side::Left, 10, 5);
         assert!(

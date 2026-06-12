@@ -289,7 +289,7 @@ impl GstreamerPipelineSpec {
              ! videoconvert ! videoscale ! video/x-raw,pixel-aspect-ratio=1/1 \
              ! nvh264enc bframes=0 rc-lookahead=0 gop-size={kf} bitrate={br} preset=low-latency-hq \
              ! h264parse config-interval=-1 \
-             ! rtph264pay config-interval=-1 pt=96 \
+             ! rtph264pay config-interval=2 pt=96 \
              ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
             kf = keyframe_interval,
             br = bitrate_kbps,
@@ -312,7 +312,7 @@ impl GstreamerPipelineSpec {
              ! videoconvert ! videoscale ! video/x-raw,pixel-aspect-ratio=1/1 \
              ! qsvh264enc b-frames=0 gop-size={kf} bitrate={br} \
              ! h264parse config-interval=-1 \
-             ! rtph264pay config-interval=-1 pt=96 \
+             ! rtph264pay config-interval=2 pt=96 \
              ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
             kf = keyframe_interval,
             br = bitrate_kbps,
@@ -335,7 +335,7 @@ impl GstreamerPipelineSpec {
              ! videoconvert ! videoscale ! video/x-raw,pixel-aspect-ratio=1/1 \
              ! vaapih264enc bitrate={br} keyframe-period={kf} rate-control=cbr \
              ! h264parse config-interval=-1 \
-             ! rtph264pay config-interval=-1 pt=96 \
+             ! rtph264pay config-interval=2 pt=96 \
              ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
             kf = keyframe_interval,
             br = bitrate_kbps,
@@ -358,7 +358,7 @@ impl GstreamerPipelineSpec {
              ! videoconvert ! videoscale ! video/x-raw,pixel-aspect-ratio=1/1 \
              ! v4l2h264enc extra-controls=\"encode,bitrate={br},h26x_minimum_qp_value=10\" \
              ! h264parse config-interval=-1 \
-             ! rtph264pay config-interval=-1 pt=96 \
+             ! rtph264pay config-interval=2 pt=96 \
              ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
             br = bitrate_kbps * 1000,
         );
@@ -381,7 +381,7 @@ impl GstreamerPipelineSpec {
              ! x264enc tune=zerolatency speed-preset=ultrafast bframes=0 key-int-max={kf} bitrate={br} \
              ! video/x-h264,profile=baseline \
              ! h264parse config-interval=-1 \
-             ! rtph264pay config-interval=-1 pt=96 \
+             ! rtph264pay config-interval=2 pt=96 \
              ! appsink name=video_sink sync=false async=false drop=true max-buffers=8 emit-signals=true",
             kf = keyframe_interval,
             br = bitrate_kbps,

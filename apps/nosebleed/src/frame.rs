@@ -78,10 +78,7 @@ impl LatestFrameStore {
         pixel_aspect_ratio: f32,
         bytes: &[u8],
     ) {
-        let mut guard = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut guard = self.state.lock().unwrap_or_else(crate::lock_recover);
         let sequence = guard.next_sequence;
         guard.next_sequence = guard.next_sequence.wrapping_add(1);
 
@@ -103,10 +100,7 @@ impl LatestFrameStore {
         last_sequence: Option<u64>,
         timeout: Duration,
     ) -> Option<VideoFrame> {
-        let mut guard = self
-            .state
-            .lock()
-            .unwrap_or_else(crate::lock_recover);
+        let mut guard = self.state.lock().unwrap_or_else(crate::lock_recover);
 
         if let Some(frame) = guard.latest.as_ref() {
             if last_sequence.is_none_or(|last| frame.sequence > last) {
