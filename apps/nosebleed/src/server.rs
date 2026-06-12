@@ -1473,6 +1473,8 @@ mod tests {
             session_manager,
             arcade: Arc::new(ArcadeService::new(1)),
             turn_credential: "test-credential".to_string(),
+            turn_host: "localhost".to_string(),
+            turn_url_internal: String::new(),
             input_sessions: Arc::new(std::sync::Mutex::new(InputSessionRegistry::default())),
             rtc_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             webrtc_api,
