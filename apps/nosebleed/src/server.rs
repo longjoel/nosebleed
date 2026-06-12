@@ -1774,11 +1774,14 @@ mod tests {
             "port should transfer to new source for same player"
         );
 
-        // Different player — should fail
-        let result = registry.reserve_ports("source-3", "player-2", &[1], Duration::from_secs(30));
-        assert!(
-            result.is_err(),
-            "different player should fail to reserve occupied port"
+        // Different player — now succeeds (force-release old reservation)
+        registry
+            .reserve_ports("source-3", "player-2", &[1], Duration::from_secs(30))
+            .expect("different player can take over port (force-release old)");
+        assert_eq!(
+            registry.per_port.get(&1).unwrap().player_id,
+            "player-2",
+            "port should transfer to new player"
         );
     }
 
